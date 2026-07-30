@@ -1,30 +1,43 @@
 {% extends "base.html" %}
-{% block title %}Dashboard - GCSSHG{% endblock %}
-{% block header_right %}<a href="/logout">Log out</a>{% endblock %}
+{% block title %}Overview - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/members">Members</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
 {% block content %}
 
-<div class="card">
-  <div class="muted">Total contributions collected (all time)</div>
-  <div class="total">KES {{ "{:,.0f}".format(total_pool) }}</div>
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Group overview</h2>
+  <span class="muted">{{ member_count }} members</span>
 </div>
 
 {% if request.query_params.get('error') %}
 <div class="error">{{ request.query_params.get('error') }}</div>
 {% endif %}
 
-<div class="card">
-  <h2>Members ({{ members|length }})</h2>
-  <table>
-    <tr><th>Name</th><th>Phone</th><th>Status</th><th></th></tr>
-    {% for m in members %}
-    <tr>
-      <td>{{ m.full_name }}</td>
-      <td>{{ m.phone or "-" }}</td>
-      <td><span class="status-active">{{ m.status }}</span></td>
-      <td><a class="row-link" href="/statement?member_id={{ m.id }}">Statement →</a></td>
-    </tr>
-    {% endfor %}
-  </table>
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-stamp">Σ</div>
+    <div class="stat-label">Total contributions</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_contributions) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">L</div>
+    <div class="stat-label">Loans outstanding</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_outstanding) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">%</div>
+    <div class="stat-label">Interest earned</div>
+    <div class="stat-value figure gold">{{ "{:,.0f}".format(total_interest_earned) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">D</div>
+    <div class="stat-label">Dividends paid</div>
+    <div class="stat-value figure gold">{{ "{:,.0f}".format(total_dividends_paid) }}</div>
+  </div>
 </div>
 
 <div class="card">
@@ -48,16 +61,12 @@
 </div>
 
 <div class="card">
-  <h2>Add a new member</h2>
-  <form method="post" action="/dashboard/add-member">
-    <label for="full_name">Full name</label>
-    <input type="text" id="full_name" name="full_name" required>
-
-    <label for="phone">Phone (optional)</label>
-    <input type="text" id="phone" name="phone" placeholder="0712345678">
-
-    <button type="submit">Add member</button>
-  </form>
+  <div class="section-title">
+    <h2>Members</h2>
+    <a href="/members" class="row-link">View all &rarr;</a>
+  </div>
+  <p class="muted">{{ member_count }} members on record. Manage the full list, add new members, and jump to individual statements from the members page.</p>
+  <a href="/members" class="btn btn-secondary">Go to member list</a>
 </div>
 
 {% endblock %}

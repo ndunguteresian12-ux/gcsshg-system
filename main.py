@@ -468,17 +468,69 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM members ORDER BY full_name")
+            cur.execute("SELECT id, full_name FROM members ORDER BY full_name")
             members = cur.fetchall()
+
+            cur.execute("SELECT COUNT(*) as count FROM members")
+            member_count = cur.fetchone()["count"]
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
+            total_contributions = cur.fetchone()["total"]
+
             cur.execute(
-                "SELECT COALESCE(SUM(amount),0) as total FROM contributions"
+                "SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends"
             )
-            total_pool = cur.fetchone()["total"]
+            total_dividends_paid = cur.fetchone()["total"]
+
+            cur.execute(
+                "SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments"
+            )
+            total_interest_earned = cur.fetchone()["total"]
+
+            cur.execute("SELECT * FROM loans WHERE status = 'active'")
+            active_loans = cur.fetchall()
+            total_loans_outstanding = Decimal("0")
+            for loan in active_loans:
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
+                    (loan["id"],),
+                )
+                repaid = cur.fetchone()["repaid"]
+                total_loans_outstanding += loan_balance_due(
+                    loan["principal"], repaid, loan["issue_date"], date.today()
+                )
     finally:
         conn.close()
     return templates.TemplateResponse(request, "dashboard.html", {
         "members": members, "role": session_data["role"],
-        "total_pool": total_pool,
+        "member_count": member_count,
+        "total_contributions": total_contributions,
+        "total_loans_outstanding": total_loans_outstanding,
+        "total_interest_earned": total_interest_earned,
+        "total_dividends_paid": total_dividends_paid,
+    })
+
+
+@app.get("/members", response_class=HTMLResponse)
+def members_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data:
+        return RedirectResponse(url="/login")
+    if session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/statement")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.*, COALESCE(SUM(c.amount), 0) as total_contributed
+                   FROM members m
+                   LEFT JOIN contributions c ON c.member_id = m.id
+                   GROUP BY m.id ORDER BY m.full_name"""
+            )
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "members.html", {
+        "members": members, "role": session_data["role"],
     })
 
 
@@ -497,7 +549,7 @@ def add_member_form(full_name: str = Form(...), phone: str = Form(""),
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url="/dashboard", status_code=303)
+    return RedirectResponse(url="/members", status_code=303)
 
 
 @app.post("/dashboard/add-contribution")

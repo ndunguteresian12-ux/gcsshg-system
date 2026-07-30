@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Members - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Members</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+<div class="card">
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th></th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.phone or "-" }}</td>
+      <td><span class="status-active">{{ m.status }}</span></td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(m.total_contributed or 0) }}</td>
+      <td><a class="row-link" href="/statement?member_id={{ m.id }}">Statement &rarr;</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>Add a new member</h2>
+  <form method="post" action="/dashboard/add-member">
+    <label for="full_name">Full name</label>
+    <input type="text" id="full_name" name="full_name" required>
+
+    <label for="phone">Phone (optional)</label>
+    <input type="text" id="phone" name="phone" placeholder="0712345678">
+
+    <button type="submit">Add member</button>
+  </form>
+</div>
+
+{% endblock %}

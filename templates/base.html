@@ -4,85 +4,195 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}GCSSHG{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --green: #1a6b3c;
-    --green-dark: #124d2b;
-    --bg: #f4f6f5;
-    --card: #ffffff;
-    --text: #1f2a24;
-    --muted: #667169;
-    --border: #dfe6e1;
+    --paper: #F6F5F1;
+    --surface: #FFFFFF;
+    --ink: #17231C;
+    --forest: #1F4D3D;
+    --forest-dark: #143229;
+    --gold: #C08829;
+    --gold-soft: #F3E4C6;
+    --muted: #6B7A72;
+    --border: #E1E4DE;
+    --red: #A33A2F;
+    --red-soft: #FBECEA;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
+    font-family: 'IBM Plex Sans', -apple-system, sans-serif;
+    background: var(--paper);
+    color: var(--ink);
   }
-  header {
-    background: var(--green);
-    color: white;
-    padding: 1rem 1.25rem;
+  h1, h2, h3, .display {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .figure {
+    font-family: 'IBM Plex Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  header.topbar {
+    background: var(--forest);
+    color: #EFEFE8;
+    padding: 0.9rem 1.5rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
   }
-  header a { color: white; text-decoration: none; font-size: 0.9rem; opacity: 0.9; }
-  header .brand { font-weight: 700; font-size: 1.05rem; }
+  header.topbar .brand {
+    font-family: 'Fraunces', serif;
+    font-weight: 600;
+    font-size: 1.15rem;
+    letter-spacing: -0.01em;
+  }
+  header.topbar .brand span { color: var(--gold); }
+  header.topbar nav a {
+    color: #DCE6E0;
+    text-decoration: none;
+    font-size: 0.85rem;
+    margin-left: 1.1rem;
+  }
+  header.topbar nav a:hover { color: white; }
   main {
-    max-width: 640px;
+    max-width: 960px;
     margin: 0 auto;
-    padding: 1.25rem;
+    padding: 1.5rem;
   }
+  main.narrow { max-width: 520px; }
+
   .card {
-    background: var(--card);
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.1rem;
-    margin-bottom: 1rem;
+    border-left: 3px dashed var(--border);
+    border-radius: 8px;
+    padding: 1.15rem 1.25rem;
+    margin-bottom: 1.1rem;
+    position: relative;
   }
-  h1, h2, h3 { margin-top: 0; }
-  h2 { font-size: 1.1rem; color: var(--green-dark); }
+  .card h2 {
+    font-size: 1rem;
+    color: var(--forest-dark);
+    margin: 0 0 0.7rem;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.9rem;
+    margin-bottom: 1.1rem;
+  }
+  @media (min-width: 640px) {
+    .stat-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px dashed var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.1rem 1.1rem;
+    position: relative;
+    overflow: hidden;
+  }
+  .stat-stamp {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1.5px solid var(--gold);
+    color: var(--gold);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transform: rotate(-8deg);
+    opacity: 0.85;
+  }
+  .stat-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+  }
+  .stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--forest-dark);
+    line-height: 1.15;
+  }
+  .stat-value.gold { color: var(--gold); }
+
   table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
-  th, td { text-align: left; padding: 0.45rem 0.3rem; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 0.82rem; text-transform: uppercase; }
+  th, td { text-align: left; padding: 0.5rem 0.35rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.figure { text-align: right; }
+  th.figure-head { text-align: right; }
+
   .muted { color: var(--muted); font-size: 0.85rem; }
-  .total { font-size: 1.6rem; font-weight: 700; color: var(--green-dark); }
-  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.6rem 0 0.25rem; }
+  label { display: block; font-size: 0.82rem; color: var(--muted); margin: 0.6rem 0 0.25rem; font-weight: 500; }
   input, select {
-    width: 100%; padding: 0.55rem; border: 1px solid var(--border); border-radius: 6px; font-size: 1rem;
+    width: 100%; padding: 0.55rem 0.6rem; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.95rem; font-family: inherit; background: var(--surface); color: var(--ink);
   }
-  button {
+  input:focus, select:focus, button:focus, a:focus {
+    outline: 2px solid var(--gold); outline-offset: 1px;
+  }
+  button, .btn {
     margin-top: 0.9rem;
-    background: var(--green);
+    background: var(--forest);
     color: white;
     border: none;
     padding: 0.65rem 1rem;
     border-radius: 6px;
-    font-size: 0.95rem;
+    font-size: 0.92rem;
+    font-weight: 500;
     cursor: pointer;
     width: 100%;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
   }
-  button:hover { background: var(--green-dark); }
+  button:hover, .btn:hover { background: var(--forest-dark); }
+  .btn-secondary {
+    background: transparent;
+    color: var(--forest-dark);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { background: var(--gold-soft); border-color: var(--gold); }
+
   .error {
-    background: #fdeceb; color: #a33a2f; border: 1px solid #f3c6c1;
+    background: var(--red-soft); color: var(--red); border: 1px solid #f3c6c1;
     padding: 0.6rem 0.8rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem;
   }
-  .row-link { color: var(--green-dark); text-decoration: none; font-weight: 600; font-size: 0.85rem; }
-  .status-active { color: var(--green-dark); font-weight: 600; }
-  .badge { display:inline-block; padding: 0.15rem 0.5rem; border-radius: 20px; font-size: 0.75rem; font-weight:600; }
-  .badge-low { background:#eaf4ee; color: var(--green-dark); }
-  .badge-high { background:#fff2e0; color:#a85e00; }
+  .row-link { color: var(--forest-dark); text-decoration: none; font-weight: 600; font-size: 0.85rem; }
+  .row-link:hover { color: var(--gold); }
+  .status-active { color: var(--forest-dark); font-weight: 600; }
+  .badge { display:inline-block; padding: 0.15rem 0.55rem; border-radius: 20px; font-size: 0.72rem; font-weight:600; }
+  .badge-low { background: var(--gold-soft); color: #8a611d; }
+  .badge-high { background: #fff2e0; color:#a85e00; }
+  .actions-row { display: flex; gap: 0.6rem; margin-top: 0.6rem; }
+  .actions-row .btn { margin-top: 0; }
+  .section-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.8rem; }
+  .section-title h2 { margin: 0; }
 </style>
 </head>
 <body>
-<header>
-  <span class="brand">GCSSHG</span>
+<header class="topbar">
+  <span class="brand">GCSSHG <span>ledger</span></span>
   {% block header_right %}{% endblock %}
 </header>
-<main>
+<main class="{% block main_class %}{% endblock %}">
   {% block content %}{% endblock %}
 </main>
 </body>
