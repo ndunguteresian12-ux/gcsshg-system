@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+pydantic
+bcrypt
+itsdangerous
+python-dotenv
+requests
