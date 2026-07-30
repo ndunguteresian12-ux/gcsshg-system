@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Statement - {{ member.full_name }}{% endblock %}
+{% block header_right %}
+  {% if role == 'member' %}<a href="/logout">Log out</a>{% else %}<a href="/dashboard">← Dashboard</a>{% endif %}
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h1 style="font-size:1.3rem;">{{ member.full_name }}</h1>
+  <div class="muted">Member since {{ member.join_date }}</div>
+</div>
+
+<div class="card">
+  <div class="muted">Total contributed to date</div>
+  <div class="total">KES {{ "{:,.0f}".format(total) }}</div>
+</div>
+
+<div class="card">
+  <h2>Contribution history</h2>
+  {% if contributions %}
+  <table>
+    <tr><th>Month</th><th>Amount</th></tr>
+    {% for c in contributions %}
+    <tr><td>{{ c.contribution_month.strftime('%b %Y') }}</td><td>KES {{ "{:,.0f}".format(c.amount) }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No contributions recorded yet.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Loans</h2>
+  {% if loans %}
+  <table>
+    <tr><th>Issued</th><th>Principal</th><th>Rate</th><th>Balance</th><th>Status</th></tr>
+    {% for l in loans %}
+    <tr>
+      <td>{{ l.issue_date }}</td>
+      <td>KES {{ "{:,.0f}".format(l.principal) }}</td>
+      <td>
+        <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
+          {{ l.interest_rate }}% / {{ l.period_months }}mo
+        </span>
+      </td>
+      <td>KES {{ "{:,.0f}".format(l.current_balance) }}</td>
+      <td>{{ l.status }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No loans on record.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Dividend history</h2>
+  {% if dividends %}
+  <table>
+    <tr><th>Year</th><th>Contribution</th><th>Dividend</th></tr>
+    {% for d in dividends %}
+    <tr>
+      <td>{{ d.fiscal_year_label }}</td>
+      <td>KES {{ "{:,.0f}".format(d.total_contribution) }}</td>
+      <td>KES {{ "{:,.2f}".format(d.dividend_amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No dividend payouts recorded yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - GCSSHG{% endblock %}
+{% block header_right %}<a href="/logout">Log out</a>{% endblock %}
+{% block content %}
+
+<div class="card">
+  <div class="muted">Total contributions collected (all time)</div>
+  <div class="total">KES {{ "{:,.0f}".format(total_pool) }}</div>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Members ({{ members|length }})</h2>
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Status</th><th></th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.phone or "-" }}</td>
+      <td><span class="status-active">{{ m.status }}</span></td>
+      <td><a class="row-link" href="/statement?member_id={{ m.id }}">Statement →</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h2>Record a contribution</h2>
+  <form method="post" action="/dashboard/add-contribution">
+    <label for="member_id">Member</label>
+    <select id="member_id" name="member_id" required>
+      {% for m in members %}
+      <option value="{{ m.id }}">{{ m.full_name }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="contribution_month">Month</label>
+    <input type="month" id="contribution_month" name="contribution_month" required>
+
+    <label for="amount">Amount (KES)</label>
+    <input type="number" id="amount" name="amount" min="500" step="1" placeholder="500" required>
+
+    <button type="submit">Save contribution</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Add a new member</h2>
+  <form method="post" action="/dashboard/add-member">
+    <label for="full_name">Full name</label>
+    <input type="text" id="full_name" name="full_name" required>
+
+    <label for="phone">Phone (optional)</label>
+    <input type="text" id="phone" name="phone" placeholder="0712345678">
+
+    <button type="submit">Add member</button>
+  </form>
+</div>
+
+{% endblock %}

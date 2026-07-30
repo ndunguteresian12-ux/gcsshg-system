@@ -8,7 +8,7 @@ Make sure uvicorn is already running in another window before you run this.
 
 import requests
 
-BASE = "http://127.0.0.1:8000"
+BASE = "https://my-sacco.onrender.com"
 session = requests.Session()  # keeps the login cookie between requests automatically
 
 # 1. Log in - replace with the phone/password you created via create_officer.py

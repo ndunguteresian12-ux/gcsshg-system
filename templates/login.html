@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Login - GCSSHG{% endblock %}
+{% block content %}
+<div class="card" style="margin-top: 2rem;">
+  <h1>Githiga Comprehensive School<br>Self Help Group</h1>
+  <p class="muted">Sign in with your registered phone number.</p>
+
+  {% if error %}
+  <div class="error">{{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="/login">
+    <label for="phone">Phone number</label>
+    <input type="text" id="phone" name="phone" inputmode="numeric" placeholder="0712345678" required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

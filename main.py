@@ -23,7 +23,9 @@ load_dotenv()  # reads .env in this folder so DATABASE_URL/SESSION_SECRET don't 
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException, Depends, Cookie, Response
+from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import bcrypt
 import itsdangerous
@@ -38,6 +40,7 @@ SECRET_KEY = os.environ.get("SESSION_SECRET", "change-me-in-production")
 signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
 app = FastAPI(title="GCSSHG Management System")
+templates = Jinja2Templates(directory="templates")
 
 
 def get_conn():
@@ -67,6 +70,17 @@ def require_session(session: Optional[str] = Cookie(default=None)):
     except itsdangerous.BadSignature:
         raise HTTPException(status_code=401, detail="Invalid or expired session")
     return data
+
+
+def get_session_optional(session: Optional[str] = Cookie(default=None)):
+    """Like require_session, but returns None instead of raising - used by
+    page routes so we can redirect to /login instead of showing a JSON error."""
+    if not session:
+        return None
+    try:
+        return signer.loads(session, max_age=60 * 60 * 24 * 14)
+    except itsdangerous.BadSignature:
+        return None
 
 
 def require_officer(session_data=Depends(require_session)):
@@ -400,3 +414,178 @@ def run_dividend_calculation(payload: DividendRunRequest, chair=Depends(require_
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+
+# ---------------------------------------------------------------------------
+# WEB PAGES (server-rendered, mobile-friendly - this is what people actually click)
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+def root(session_data=Depends(get_session_optional)):
+    if not session_data:
+        return RedirectResponse(url="/login")
+    if session_data["role"] == "member":
+        return RedirectResponse(url="/statement")
+    return RedirectResponse(url="/dashboard")
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: Optional[str] = None):
+    return templates.TemplateResponse(request, "login.html", {"error": error})
+
+
+@app.post("/login")
+def login_submit(phone: str = Form(...), password: str = Form(...)):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE phone = %s AND is_active = TRUE", (phone,))
+            user = cur.fetchone()
+            if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+                return RedirectResponse(url="/login?error=Invalid+phone+or+password", status_code=303)
+            token = create_session_token(user["id"], user["role"])
+            redirect_to = "/statement" if user["role"] == "member" else "/dashboard"
+            response = RedirectResponse(url=redirect_to, status_code=303)
+            response.set_cookie("session", token, httponly=True, samesite="lax", max_age=60 * 60 * 24 * 14)
+            return response
+    finally:
+        conn.close()
+
+
+@app.get("/logout")
+def logout_page():
+    response = RedirectResponse(url="/login")
+    response.delete_cookie("session")
+    return response
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data:
+        return RedirectResponse(url="/login")
+    if session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/statement")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members ORDER BY full_name")
+            members = cur.fetchall()
+            cur.execute(
+                "SELECT COALESCE(SUM(amount),0) as total FROM contributions"
+            )
+            total_pool = cur.fetchone()["total"]
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dashboard.html", {
+        "members": members, "role": session_data["role"],
+        "total_pool": total_pool,
+    })
+
+
+@app.post("/dashboard/add-member")
+def add_member_form(full_name: str = Form(...), phone: str = Form(""),
+                     session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO members (full_name, phone) VALUES (%s, %s)",
+                (full_name, phone or None),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.post("/dashboard/add-contribution")
+def add_contribution_form(member_id: int = Form(...), contribution_month: str = Form(...),
+                           amount: float = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            if amount < float(settings["min_monthly_contribution"]):
+                return RedirectResponse(
+                    url=f"/dashboard?error=Amount+below+minimum+of+{settings['min_monthly_contribution']}",
+                    status_code=303,
+                )
+            month_date = contribution_month if len(contribution_month) == 10 else f"{contribution_month}-01"
+            cur.execute(
+                "INSERT INTO contributions (member_id, contribution_month, amount, recorded_by) "
+                "VALUES (%s, %s, %s, %s)",
+                (member_id, month_date, amount, session_data["user_id"]),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/dashboard", status_code=303)
+
+
+@app.get("/statement", response_class=HTMLResponse)
+def statement_page(request: Request, member_id: Optional[int] = None,
+                    session_data=Depends(get_session_optional)):
+    if not session_data:
+        return RedirectResponse(url="/login")
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if session_data["role"] == "member":
+                cur.execute("SELECT id FROM members WHERE user_id = %s", (session_data["user_id"],))
+                own = cur.fetchone()
+                if not own:
+                    return HTMLResponse(
+                        "<p style='font-family:sans-serif;padding:2rem'>"
+                        "No member record is linked to your login yet - ask your treasurer to link it."
+                        "</p>"
+                    )
+                mid = own["id"]
+            else:
+                if not member_id:
+                    return RedirectResponse(url="/dashboard")
+                mid = member_id
+
+            cur.execute("SELECT * FROM members WHERE id = %s", (mid,))
+            member = cur.fetchone()
+            if not member:
+                raise HTTPException(status_code=404, detail="Member not found")
+
+            cur.execute(
+                "SELECT contribution_month, amount FROM contributions "
+                "WHERE member_id = %s ORDER BY contribution_month", (mid,)
+            )
+            contributions = cur.fetchall()
+            total = sum((c["amount"] for c in contributions), Decimal("0"))
+
+            cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (mid,))
+            loans = cur.fetchall()
+            loan_details = []
+            for loan in loans:
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
+                    (loan["id"],),
+                )
+                repaid = cur.fetchone()["repaid"]
+                balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], date.today())
+                loan_details.append({**loan, "amount_repaid": repaid, "current_balance": balance})
+
+            cur.execute(
+                """SELECT d.dividend_amount, d.total_contribution, r.fiscal_year_label, r.computed_at
+                   FROM dividends d JOIN dividend_runs r ON r.id = d.dividend_run_id
+                   WHERE d.member_id = %s ORDER BY r.computed_at DESC""",
+                (mid,),
+            )
+            dividends = cur.fetchall()
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(request, "statement.html", {
+        "member": member, "contributions": contributions,
+        "total": total, "loans": loan_details, "dividends": dividends,
+        "role": session_data["role"],
+    })
