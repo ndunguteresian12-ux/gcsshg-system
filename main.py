@@ -180,7 +180,7 @@ def create_member(payload: MemberCreate, officer=Depends(require_officer)):
         conn.close()
 
 
-@app.get("/members")
+@app.get("/api/members")
 def list_members(officer=Depends(require_officer)):
     conn = get_conn()
     try:
