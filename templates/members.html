@@ -13,6 +13,10 @@
   <a href="/dashboard" class="row-link">&larr; Overview</a>
 </div>
 
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
 <div class="card">
   <table>
     <tr><th>Name</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th></th></tr>
@@ -28,6 +32,7 @@
   </table>
 </div>
 
+{% if role == 'chairperson' %}
 <div class="card">
   <h2>Add a new member</h2>
   <form method="post" action="/dashboard/add-member">
@@ -40,5 +45,8 @@
     <button type="submit">Add member</button>
   </form>
 </div>
+{% else %}
+<p class="muted">Only the chairperson can add new members.</p>
+{% endif %}
 
 {% endblock %}

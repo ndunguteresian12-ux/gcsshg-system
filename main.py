@@ -165,7 +165,7 @@ def logout(response: Response):
 # ---------------------------------------------------------------------------
 
 @app.post("/members")
-def create_member(payload: MemberCreate, officer=Depends(require_officer)):
+def create_member(payload: MemberCreate, officer=Depends(require_chairperson)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -287,7 +287,7 @@ def member_statement(member_id: int, session_data=Depends(require_session)):
 # ---------------------------------------------------------------------------
 
 @app.post("/loans")
-def issue_loan(payload: LoanCreate, officer=Depends(require_officer)):
+def issue_loan(payload: LoanCreate, officer=Depends(require_chairperson)):
     terms = classify_loan(payload.principal)
     conn = get_conn()
     try:
@@ -441,7 +441,11 @@ def login_submit(phone: str = Form(...), password: str = Form(...)):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE phone = %s AND is_active = TRUE", (phone,))
             user = cur.fetchone()
-            if not user or not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+            if not user or not user["password_hash"]:
+                return RedirectResponse(
+                    url="/login?error=Account+not+set+up+yet+-+use+your+invite+link", status_code=303
+                )
+            if not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
                 return RedirectResponse(url="/login?error=Invalid+phone+or+password", status_code=303)
             token = create_session_token(user["id"], user["role"])
             redirect_to = "/statement" if user["role"] == "member" else "/dashboard"
@@ -450,6 +454,51 @@ def login_submit(phone: str = Form(...), password: str = Form(...)):
             return response
     finally:
         conn.close()
+
+
+@app.get("/set-password", response_class=HTMLResponse)
+def set_password_page(request: Request, token: str, error: Optional[str] = None):
+    try:
+        data = signer.loads(token, max_age=60 * 60 * 48)  # 48-hour link
+        if data.get("purpose") != "set_password":
+            raise itsdangerous.BadSignature("wrong purpose")
+    except itsdangerous.BadSignature:
+        return HTMLResponse(
+            "<p style='font-family:sans-serif;padding:2rem'>"
+            "This setup link is invalid or has expired. Ask your chairperson for a new one."
+            "</p>"
+        )
+    return templates.TemplateResponse(request, "set_password.html", {"token": token, "error": error})
+
+
+@app.post("/set-password")
+def set_password_submit(token: str = Form(...), password: str = Form(...), confirm: str = Form(...)):
+    try:
+        data = signer.loads(token, max_age=60 * 60 * 48)
+        if data.get("purpose") != "set_password":
+            raise itsdangerous.BadSignature("wrong purpose")
+    except itsdangerous.BadSignature:
+        return HTMLResponse(
+            "<p style='font-family:sans-serif;padding:2rem'>"
+            "This setup link is invalid or has expired. Ask your chairperson for a new one."
+            "</p>"
+        )
+    if password != confirm:
+        return RedirectResponse(url=f"/set-password?token={token}&error=Passwords+do+not+match", status_code=303)
+    if len(password) < 6:
+        return RedirectResponse(
+            url=f"/set-password?token={token}&error=Password+must+be+at+least+6+characters", status_code=303
+        )
+
+    password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET password_hash = %s WHERE id = %s", (password_hash, data["user_id"]))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/login?error=Password+set+-+please+sign+in", status_code=303)
 
 
 @app.get("/logout")
@@ -537,8 +586,8 @@ def members_page(request: Request, session_data=Depends(get_session_optional)):
 @app.post("/dashboard/add-member")
 def add_member_form(full_name: str = Form(...), phone: str = Form(""),
                      session_data=Depends(get_session_optional)):
-    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
-        return RedirectResponse(url="/login")
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+add+members", status_code=303)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
