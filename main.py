@@ -128,6 +128,13 @@ def require_officer(session_data=Depends(require_session)):
     return session_data
 
 
+def require_loan_officer(session_data=Depends(require_session)):
+    """Chairperson and treasurer only - secretary can view loans but not transact on them."""
+    if session_data["role"] not in ("chairperson", "treasurer"):
+        raise HTTPException(status_code=403, detail="Chairperson or treasurer only")
+    return session_data
+
+
 def require_chairperson(session_data=Depends(require_session)):
     if session_data["role"] != "chairperson":
         raise HTTPException(status_code=403, detail="Chairperson only")
@@ -319,7 +326,7 @@ def member_statement(member_id: int, session_data=Depends(require_session)):
 # ---------------------------------------------------------------------------
 
 @app.post("/loans")
-def issue_loan(payload: LoanCreate, officer=Depends(require_officer)):
+def issue_loan(payload: LoanCreate, officer=Depends(require_loan_officer)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -350,7 +357,7 @@ def issue_loan(payload: LoanCreate, officer=Depends(require_officer)):
 
 
 @app.post("/loans/repayments")
-def record_repayment(payload: RepaymentCreate, officer=Depends(require_officer)):
+def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_officer)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -691,8 +698,8 @@ def loan_statement_page(loan_id: int, request: Request, session_data=Depends(get
 @app.post("/dashboard/issue-loan")
 def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
                      issue_date_field: str = Form(...), session_data=Depends(get_session_optional)):
-    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
-        return RedirectResponse(url="/login")
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+issue+loans", status_code=303)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -724,8 +731,8 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
 @app.post("/dashboard/repay-loan")
 def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                      payment_date_field: str = Form(...), session_data=Depends(get_session_optional)):
-    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
-        return RedirectResponse(url="/login")
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -870,8 +877,8 @@ def run_penalty_check(session_data=Depends(get_session_optional)):
     the unique constraint on (member_id, penalty_type, reference_id, period_label)
     prevents double-charging the same month twice.
     """
-    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
-        return RedirectResponse(url="/login")
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+or+treasurer+can+run+this+check", status_code=303)
     conn = get_conn()
     inserted = 0
     try:

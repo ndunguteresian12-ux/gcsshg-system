@@ -39,11 +39,13 @@
 </div>
 
 <div class="card">
+  {% if role in ['chairperson', 'treasurer'] %}
   <div class="actions-row" style="margin-bottom:0.8rem;">
     <form method="post" action="/admin/run-penalty-check" style="width:100%;">
       <button type="submit" class="btn-secondary">Run overdue &amp; penalty check</button>
     </form>
   </div>
+  {% endif %}
   {% if loans %}
   <table>
     <tr>
@@ -86,6 +88,7 @@
 
 <div class="card">
   <h2>Record a repayment</h2>
+  {% if role in ['chairperson', 'treasurer'] %}
   {% if loans %}
   <form method="post" action="/dashboard/repay-loan">
     <label for="loan_id">Loan</label>
@@ -108,10 +111,14 @@
   {% else %}
   <p class="muted">No active loans to repay.</p>
   {% endif %}
+  {% else %}
+  <p class="muted">Only the chairperson or treasurer can record loan repayments.</p>
+  {% endif %}
 </div>
 
 <div class="card">
   <h2>Issue a new loan</h2>
+  {% if role in ['chairperson', 'treasurer'] %}
   <p class="muted">
     Under KES 20,000: 10% per month, due within 1 month.<br>
     KES 20,000-{{ "{:,.0f}".format(high_loan_ceiling) }}: flat 10% total, 3 monthly installments.<br>
@@ -133,6 +140,9 @@
 
     <button type="submit">Issue loan</button>
   </form>
+  {% else %}
+  <p class="muted">Only the chairperson or treasurer can issue loans.</p>
+  {% endif %}
 </div>
 
 {% endblock %}
