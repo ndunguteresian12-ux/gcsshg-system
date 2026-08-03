@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}GCSSHG{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="/static/logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
@@ -189,7 +190,7 @@
 </head>
 <body>
 <header class="topbar">
-  <span class="brand">GCSSHG <span>ledger</span></span>
+  <span class="brand"><img src="/static/logo.svg" alt="GCSSHG" style="height:32px; width:32px; vertical-align:middle; margin-right:0.5rem; border-radius:50%;">GCSSHG <span>ledger</span></span>
   {% block header_right %}{% endblock %}
 </header>
 <main class="{% block main_class %}{% endblock %}">

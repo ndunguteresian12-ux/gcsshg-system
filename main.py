@@ -26,6 +26,7 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import bcrypt
 import itsdangerous
@@ -43,6 +44,7 @@ signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
 app = FastAPI(title="GCSSHG Management System")
 templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 def get_conn():
