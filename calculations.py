@@ -1,13 +1,14 @@
 """
 GCSSHG core calculation engine.
 
-Two things have to be exactly right, everything else in the app is CRUD:
-  1. Loan interest (tiered: <20,000 = 10%/month, >=20,000 = 10%/3 months)
-  2. Dividend allocation (time-weighted by month contributed)
+Three things have to be exactly right, everything else in the app is CRUD:
+  1. Loan interest (tiered: <20,000 = 10%/month, 20,000-30,000 = flat 10%
+     total over a 3-month installment schedule)
+  2. Due dates and overdue/penalty tracking
+  3. Dividend allocation (time-weighted by month contributed)
 
 Kept as pure functions with no DB/FastAPI dependency so they can be
-unit-tested in isolation and reused from scripts (e.g. a one-off
-year-end dividend run) as well as from the API.
+unit-tested in isolation and reused from scripts as well as the API.
 """
 
 from dataclasses import dataclass
@@ -18,28 +19,57 @@ from decimal import Decimal, ROUND_HALF_UP
 
 
 # ---------------------------------------------------------------------------
-# LOAN INTEREST
+# LOAN INTEREST + TERMS
 # ---------------------------------------------------------------------------
 
 LOW_LOAN_CEILING = Decimal("19999")
-LOW_LOAN_RATE = Decimal("10")     # percent, per 1 month
-HIGH_LOAN_RATE = Decimal("10")    # percent, per 3 months
-HIGH_LOAN_PERIOD_MONTHS = 3
+HIGH_LOAN_CEILING = Decimal("30000")  # informational ceiling - loans above this still processed under mid-tier terms, flagged in UI
+
+LOW_LOAN_RATE = Decimal("10")     # percent, per 1 month, recurring
+MID_LOAN_RATE = Decimal("10")     # percent, FLAT one-time total over the loan's 3-month term
+
+LOW_LOAN_DEADLINE_MONTHS = 1
+MID_LOAN_DEADLINE_MONTHS = 3
+
+DEFAULT_PENALTY_AMOUNT = Decimal("50")  # KES, editable via group_settings
 
 
 @dataclass
 class LoanTerms:
-    tier: str            # 'low' | 'high'
+    tier: str            # 'low' | 'mid'
     rate_percent: Decimal
-    period_months: int
+    period_months: int      # billing period unit (1 for low; used for low-tier recurring calc)
+    deadline_months: int    # months allowed before the loan is "due"
+    exceeds_ceiling: bool = False  # True if principal > HIGH_LOAN_CEILING (mid-tier terms applied anyway)
 
 
-def classify_loan(principal: Decimal) -> LoanTerms:
+def classify_loan(principal: Decimal,
+                   low_ceiling: Decimal = LOW_LOAN_CEILING,
+                   low_rate: Decimal = LOW_LOAN_RATE,
+                   mid_rate: Decimal = MID_LOAN_RATE,
+                   low_deadline: int = LOW_LOAN_DEADLINE_MONTHS,
+                   mid_deadline: int = MID_LOAN_DEADLINE_MONTHS,
+                   high_ceiling: Decimal = HIGH_LOAN_CEILING) -> LoanTerms:
     """Determine which interest tier a loan falls into, per GCSSHG rules."""
     principal = Decimal(principal)
-    if principal <= LOW_LOAN_CEILING:
-        return LoanTerms(tier="low", rate_percent=LOW_LOAN_RATE, period_months=1)
-    return LoanTerms(tier="high", rate_percent=HIGH_LOAN_RATE, period_months=HIGH_LOAN_PERIOD_MONTHS)
+    if principal <= low_ceiling:
+        return LoanTerms(tier="low", rate_percent=low_rate, period_months=1,
+                          deadline_months=low_deadline, exceeds_ceiling=False)
+    return LoanTerms(tier="mid", rate_percent=mid_rate, period_months=3,
+                      deadline_months=mid_deadline, exceeds_ceiling=(principal > high_ceiling))
+
+
+def add_months(d: date, months: int) -> date:
+    """Add whole calendar months to a date, clamping the day to the target month's length."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def compute_due_date(issue_date: date, terms: LoanTerms) -> date:
+    return add_months(issue_date, terms.deadline_months)
 
 
 def months_between(start: date, end: date) -> int:
@@ -49,38 +79,91 @@ def months_between(start: date, end: date) -> int:
 
 def billing_periods_elapsed(issue_date: date, as_of: date, period_months: int) -> int:
     """
-    Number of *complete or partially-entered* billing periods since issue.
-    GCSSHG practice (like most table-banking groups): stepping into a new
-    period at all triggers that period's full interest charge - there's no
-    daily proration. So we round UP to the next whole period.
+    Number of billing periods since issue for the LOW tier's recurring
+    monthly interest. Stepping into a new period at all triggers that
+    period's full interest charge - no daily proration.
     """
     if as_of <= issue_date:
         return 0
     total_months = months_between(issue_date, as_of)
-    # +1 day rolled into a new month still counts as having entered that period
     if as_of.day > issue_date.day:
         total_months += 1
-    total_months = max(total_months, 1)  # any elapsed time at all = at least 1 period charged
+    total_months = max(total_months, 1)
     return ceil(total_months / period_months)
 
 
-def loan_interest_due(principal: Decimal, issue_date: date, as_of: date) -> Decimal:
+def loan_interest_due(principal: Decimal, issue_date: date, as_of: date, terms: LoanTerms = None) -> Decimal:
     """
-    Total interest accrued on a loan (simple interest per period, GCSSHG-style:
-    each period charges rate% of the ORIGINAL principal - not compounding,
-    consistent with how the group currently calculates by hand).
+    Total interest owed on a loan.
+    - low tier: 10% per elapsed month, keeps accruing indefinitely if unpaid (unchanged behavior)
+    - mid tier: FLAT 10% of original principal, one-time - does not grow with lateness
+      (lateness cost is the separate overdue penalty, not extra interest)
     """
     principal = Decimal(principal)
-    terms = classify_loan(principal)
-    periods = billing_periods_elapsed(issue_date, as_of, terms.period_months)
-    interest = principal * (terms.rate_percent / Decimal("100")) * periods
+    terms = terms or classify_loan(principal)
+    if terms.tier == "low":
+        periods = billing_periods_elapsed(issue_date, as_of, terms.period_months)
+        interest = principal * (terms.rate_percent / Decimal("100")) * periods
+    else:
+        interest = principal * (terms.rate_percent / Decimal("100"))
     return interest.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def loan_balance_due(principal: Decimal, amount_repaid: Decimal, issue_date: date, as_of: date) -> Decimal:
+def loan_balance_due(principal: Decimal, amount_repaid: Decimal, issue_date: date, as_of: date,
+                      terms: LoanTerms = None) -> Decimal:
     """Outstanding balance = principal + accrued interest - repayments made so far."""
-    total_owed = Decimal(principal) + loan_interest_due(principal, issue_date, as_of)
+    terms = terms or classify_loan(principal)
+    total_owed = Decimal(principal) + loan_interest_due(principal, issue_date, as_of, terms)
     return (total_owed - Decimal(amount_repaid)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def mid_tier_installment_schedule(principal: Decimal, issue_date: date, terms: LoanTerms = None):
+    """
+    Returns the 3 suggested monthly installments for a mid-tier loan:
+    each is (principal/3) + (total_interest/3), for display/reference only -
+    actual repayments are still tracked freely, this is just the expected schedule.
+    """
+    terms = terms or classify_loan(principal)
+    principal = Decimal(principal)
+    total_interest = principal * (terms.rate_percent / Decimal("100"))
+    monthly_principal = (principal / 3).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    monthly_interest = (total_interest / 3).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    schedule = []
+    for i in range(1, 4):
+        due = add_months(issue_date, i)
+        schedule.append({
+            "installment_number": i,
+            "due_date": due,
+            "principal_component": monthly_principal,
+            "interest_component": monthly_interest,
+            "total": monthly_principal + monthly_interest,
+        })
+    return schedule
+
+
+# ---------------------------------------------------------------------------
+# OVERDUE + PENALTIES
+# ---------------------------------------------------------------------------
+
+def is_loan_overdue(due_date: date, balance: Decimal, as_of: date) -> bool:
+    return balance > 0 and as_of > due_date
+
+
+def loan_overdue_months(due_date: date, as_of: date) -> int:
+    """How many full months past the due date (minimum 1 if overdue at all)."""
+    if as_of <= due_date:
+        return 0
+    total_months = months_between(due_date, as_of)
+    if as_of.day > due_date.day:
+        total_months += 1
+    return max(total_months, 1)
+
+
+def loan_penalty_due(due_date: date, balance: Decimal, as_of: date, penalty_amount: Decimal) -> Decimal:
+    if not is_loan_overdue(due_date, balance, as_of):
+        return Decimal("0")
+    months = loan_overdue_months(due_date, as_of)
+    return (Decimal(penalty_amount) * months).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # ---------------------------------------------------------------------------
@@ -91,18 +174,12 @@ def fiscal_month_sequence(start_month: int, length: int):
     """
     Returns a list of `length` calendar month numbers starting at start_month,
     wrapping around the year. E.g. start=3, length=11 -> [3,4,5,6,7,8,9,10,11,12,1]
-    (Mar through Jan) - matches your sheet's MAR..JAN2 columns.
     """
     return [((start_month - 1 + i) % 12) + 1 for i in range(length)]
 
 
 def month_weight(month_index_in_year: int, fiscal_length: int) -> int:
-    """
-    Weight for a contribution made in the Nth month of the fiscal year
-    (1-indexed). A contribution in month 1 (e.g. March) sits in the pool
-    for the whole fiscal_length months and gets full weight; a contribution
-    in the last month gets weight 1.
-    """
+    """Weight for a contribution made in the Nth month of the fiscal year (1-indexed)."""
     return fiscal_length - month_index_in_year + 1
 
 
@@ -110,13 +187,12 @@ def month_weight(month_index_in_year: int, fiscal_length: int) -> int:
 class MemberContributionRecord:
     member_id: int
     full_name: str
-    # ordered list of (calendar_month_number, amount) for the fiscal year
-    monthly_amounts: list  # list[tuple[int, Decimal]]
+    monthly_amounts: list  # list[tuple[int, Decimal]] - (calendar_month_number, amount)
 
 
 def compute_weighted_contribution(record: MemberContributionRecord, start_month: int, fiscal_length: int) -> Decimal:
     seq = fiscal_month_sequence(start_month, fiscal_length)
-    month_position = {m: idx + 1 for idx, m in enumerate(seq)}  # calendar month -> position 1..N
+    month_position = {m: idx + 1 for idx, m in enumerate(seq)}
     weighted_total = Decimal("0")
     for cal_month, amount in record.monthly_amounts:
         pos = month_position[cal_month]
@@ -134,16 +210,7 @@ class DividendResult:
     dividend_amount: Decimal
 
 
-def run_dividends(
-    records: list,               # list[MemberContributionRecord]
-    total_interest_pool: Decimal,
-    start_month: int,
-    fiscal_length: int,
-) -> list:
-    """
-    Allocates the year's total interest pool across members proportional
-    to their time-weighted contributions.
-    """
+def run_dividends(records: list, total_interest_pool: Decimal, start_month: int, fiscal_length: int) -> list:
     weighted = []
     total_weighted = Decimal("0")
     for r in records:
@@ -158,46 +225,35 @@ def run_dividends(
         dividend = (pool * share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         total_contribution = sum(Decimal(a) for _, a in r.monthly_amounts)
         results.append(DividendResult(
-            member_id=r.member_id,
-            full_name=r.full_name,
-            total_contribution=total_contribution,
-            weighted_contribution=w,
+            member_id=r.member_id, full_name=r.full_name,
+            total_contribution=total_contribution, weighted_contribution=w,
             dividend_amount=dividend,
         ))
     return results
 
 
-# ---------------------------------------------------------------------------
-# Quick self-test using a couple of rows shaped like your sheet
-# (Mar..Jan = 11 months). Run: python3 calculations.py
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    # Two members: one who front-loaded contributions early in the year,
-    # one who paid the same TOTAL but mostly late - front-loader should
-    # get a bigger dividend despite equal totals.
-    front_loader = MemberContributionRecord(
-        member_id=1, full_name="Early Payer",
-        monthly_amounts=[(3, 2000), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0),
-                          (9, 0), (10, 0), (11, 0), (12, 0), (1, 0)]
-    )
-    late_payer = MemberContributionRecord(
-        member_id=2, full_name="Late Payer",
-        monthly_amounts=[(3, 0), (4, 0), (5, 0), (6, 0), (7, 0), (8, 0),
-                          (9, 0), (10, 0), (11, 0), (12, 0), (1, 2000)]
-    )
-    results = run_dividends(
-        [front_loader, late_payer],
-        total_interest_pool=Decimal("1100"),
-        start_month=3, fiscal_length=11,
-    )
-    for r in results:
-        print(f"{r.full_name}: total={r.total_contribution} weighted={r.weighted_contribution} dividend={r.dividend_amount}")
+    print("Low tier: 15,000 loan issued Jan 1, checked May 5 (well past 1-month due date)")
+    terms_low = classify_loan(Decimal("15000"))
+    due = compute_due_date(date(2026, 1, 1), terms_low)
+    print("  due date:", due)
+    print("  interest due:", loan_interest_due(Decimal("15000"), date(2026, 1, 1), date(2026, 5, 5), terms_low))
+    print("  overdue?", is_loan_overdue(due, Decimal("15000"), date(2026, 5, 5)))
+    print("  overdue months:", loan_overdue_months(due, date(2026, 5, 5)))
+    print("  penalty due:", loan_penalty_due(due, Decimal("15000"), date(2026, 5, 5), Decimal("50")))
 
-    print()
-    print("Loan interest checks:")
-    # Low tier: 15,000 loan, entering its 3rd monthly period -> 10% x 3 = 4500 interest
-    print("15,000 loan, Jan 1 -> Mar 5:",
-          loan_interest_due(Decimal("15000"), date(2026, 1, 1), date(2026, 3, 5)))
-    # High tier: 25,000 loan, entering its 2nd quarterly period -> 10% x2 = 5000 interest
-    print("25,000 loan, Jan 1 -> May 2:",
-          loan_interest_due(Decimal("25000"), date(2026, 1, 1), date(2026, 5, 2)))
+    print("\nMid tier: 25,000 loan issued Jan 1, checked at month 2 (not yet due)")
+    terms_mid = classify_loan(Decimal("25000"))
+    due2 = compute_due_date(date(2026, 1, 1), terms_mid)
+    print("  due date:", due2)
+    print("  interest due (should be flat 2500, not growing):",
+          loan_interest_due(Decimal("25000"), date(2026, 1, 1), date(2026, 3, 1), terms_mid))
+    print("  installment schedule:")
+    for inst in mid_tier_installment_schedule(Decimal("25000"), date(2026, 1, 1), terms_mid):
+        print("   ", inst)
+
+    print("\nMid tier: same loan, checked well past due date (month 5, unpaid)")
+    print("  interest due (still flat 2500):",
+          loan_interest_due(Decimal("25000"), date(2026, 1, 1), date(2026, 6, 1), terms_mid))
+    print("  overdue?", is_loan_overdue(due2, Decimal("25000"), date(2026, 6, 1)))
+    print("  penalty due:", loan_penalty_due(due2, Decimal("25000"), date(2026, 6, 1), Decimal("50")))

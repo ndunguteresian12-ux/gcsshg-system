@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Settings - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/loans">Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Group settings</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/settings/update">
+    <h2 style="font-size:0.95rem;">Contributions</h2>
+    <label for="min_monthly_contribution">Minimum monthly contribution (KES)</label>
+    <input type="number" id="min_monthly_contribution" name="min_monthly_contribution" step="1" min="0" value="{{ settings.min_monthly_contribution }}" required>
+
+    <h2 style="font-size:0.95rem; margin-top:1.4rem;">Loan tiers</h2>
+    <label for="low_loan_ceiling">Low-tier ceiling (loans at or below this use monthly interest)</label>
+    <input type="number" id="low_loan_ceiling" name="low_loan_ceiling" step="1" value="{{ settings.low_loan_ceiling }}" required>
+
+    <label for="low_loan_interest_rate">Low-tier interest rate (% per month)</label>
+    <input type="number" id="low_loan_interest_rate" name="low_loan_interest_rate" step="0.1" value="{{ settings.low_loan_interest_rate }}" required>
+
+    <label for="low_loan_deadline_months">Low-tier repayment deadline (months)</label>
+    <input type="number" id="low_loan_deadline_months" name="low_loan_deadline_months" step="1" min="1" value="{{ settings.low_loan_deadline_months }}" required>
+
+    <label for="high_loan_ceiling">Mid-tier recommended ceiling (KES)</label>
+    <input type="number" id="high_loan_ceiling" name="high_loan_ceiling" step="1" value="{{ settings.high_loan_ceiling }}" required>
+
+    <label for="high_loan_interest_rate">Mid-tier interest rate (% total, flat over the loan term)</label>
+    <input type="number" id="high_loan_interest_rate" name="high_loan_interest_rate" step="0.1" value="{{ settings.high_loan_interest_rate }}" required>
+
+    <label for="high_loan_deadline_months">Mid-tier repayment deadline (months)</label>
+    <input type="number" id="high_loan_deadline_months" name="high_loan_deadline_months" step="1" min="1" value="{{ settings.high_loan_deadline_months }}" required>
+
+    <h2 style="font-size:0.95rem; margin-top:1.4rem;">Penalties</h2>
+    <label for="penalty_amount">Penalty amount (KES, charged per overdue month or missed contribution)</label>
+    <input type="number" id="penalty_amount" name="penalty_amount" step="1" min="0" value="{{ settings.penalty_amount }}" required>
+
+    <button type="submit">Save settings</button>
+  </form>
+  <p class="muted" style="margin-top:0.8rem;">
+    Changes here only affect loans issued after saving - existing loans keep the terms they were issued under.
+  </p>
+</div>
+
+{% endblock %}

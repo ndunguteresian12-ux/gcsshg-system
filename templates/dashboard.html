@@ -3,6 +3,9 @@
 {% block header_right %}
 <nav>
   <a href="/members">Members</a>
+  <a href="/loans">Loans</a>
+  <a href="/penalties">Penalties</a>
+  {% if role == 'chairperson' %}<a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
 </nav>
 {% endblock %}
@@ -25,6 +28,11 @@
   </div>
   <div class="stat-card">
     <div class="stat-stamp">L</div>
+    <div class="stat-label">Loans issued</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_issued) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">B</div>
     <div class="stat-label">Loans outstanding</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_outstanding) }}</div>
   </div>

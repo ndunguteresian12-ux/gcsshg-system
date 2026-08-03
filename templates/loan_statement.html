@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Loan statement{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans">&larr; Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h1 style="font-size:1.3rem; margin:0;">{{ loan.full_name }}</h1>
+  <div class="muted">Loan issued {{ loan.issue_date }} &middot; due {{ loan.due_date }}</div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Principal</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.principal) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Balance</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.current_balance) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Repaid</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.amount_repaid) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Penalty owed</div>
+    <div class="stat-value figure" style="color: var(--red);">{{ "{:,.0f}".format(loan.penalty_due) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <span class="badge {{ 'badge-low' if loan.interest_tier == 'low' else 'badge-high' }}">
+    {{ loan.interest_rate }}% / {{ loan.period_months }}mo tier
+  </span>
+  {% if loan.is_overdue %}
+  <span style="color: var(--red); font-weight:600; margin-left:0.6rem;">Overdue ({{ loan.overdue_months }} month{{ 's' if loan.overdue_months != 1 else '' }})</span>
+  {% endif %}
+</div>
+
+{% if schedule %}
+<div class="card">
+  <h2>Installment schedule (reference)</h2>
+  <table>
+    <tr><th>#</th><th>Due</th><th class="figure-head">Principal</th><th class="figure-head">Interest</th><th class="figure-head">Total</th></tr>
+    {% for s in schedule %}
+    <tr>
+      <td>{{ s.installment_number }}</td>
+      <td>{{ s.due_date }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(s.principal_component) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(s.interest_component) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(s.total) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Repayment history</h2>
+  {% if repayments %}
+  <table>
+    <tr><th>Date</th><th class="figure-head">Amount</th><th class="figure-head">Principal</th><th class="figure-head">Interest</th></tr>
+    {% for r in repayments %}
+    <tr>
+      <td>{{ r.payment_date }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(r.amount) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(r.principal_component) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(r.interest_component) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No repayments recorded yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

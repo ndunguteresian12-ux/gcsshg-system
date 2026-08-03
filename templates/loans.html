@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Loans - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/members">Members</a>
+  <a href="/penalties">Penalties</a>
+  {% if role == 'chairperson' %}<a href="/settings">Settings</a>{% endif %}
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Loans</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-stamp">Σ</div>
+    <div class="stat-label">Total loans issued</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_issued) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">L</div>
+    <div class="stat-label">Outstanding</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_outstanding) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">!</div>
+    <div class="stat-label">Overdue loans</div>
+    <div class="stat-value figure" style="color: var(--red);">{{ overdue_count }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="actions-row" style="margin-bottom:0.8rem;">
+    <form method="post" action="/admin/run-penalty-check" style="width:100%;">
+      <button type="submit" class="btn-secondary">Run overdue &amp; penalty check</button>
+    </form>
+  </div>
+  {% if loans %}
+  <table>
+    <tr>
+      <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
+      <th>Rate</th><th class="figure-head">Balance</th><th class="figure-head">Penalty</th><th>Status</th><th></th>
+    </tr>
+    {% for l in loans %}
+    <tr>
+      <td><a class="row-link" href="/loans/{{ l.id }}/statement">{{ l.full_name }}</a></td>
+      <td>{{ l.issue_date }}</td>
+      <td>{{ l.due_date }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
+      <td>
+        <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
+          {{ l.interest_rate }}% / {{ l.period_months }}mo
+        </span>
+      </td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
+      <td class="figure" style="text-align:right;">
+        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.penalty_due) }}</span>{% else %}-{% endif %}
+      </td>
+      <td>
+        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
+        {% else %}{{ l.status }}{% endif %}
+      </td>
+      <td>
+        {% if role == 'chairperson' %}
+        <form method="post" action="/loans/{{ l.id }}/delete" onsubmit="return confirm('Delete this loan and all its repayment history? This cannot be undone.');" style="margin:0;">
+          <button type="submit" class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Delete</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No loans issued yet.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Record a repayment</h2>
+  {% if loans %}
+  <form method="post" action="/dashboard/repay-loan">
+    <label for="loan_id">Loan</label>
+    <select id="loan_id" name="loan_id" required>
+      {% for l in loans %}
+      {% if l.status == 'active' %}
+      <option value="{{ l.id }}">{{ l.full_name }} - KES {{ "{:,.0f}".format(l.principal) }} (balance {{ "{:,.0f}".format(l.current_balance) }})</option>
+      {% endif %}
+      {% endfor %}
+    </select>
+
+    <label for="amount">Amount paid (KES)</label>
+    <input type="number" id="amount" name="amount" min="1" step="1" required>
+
+    <label for="payment_date_field">Payment date</label>
+    <input type="date" id="payment_date_field" name="payment_date_field" required>
+
+    <button type="submit">Record repayment</button>
+  </form>
+  {% else %}
+  <p class="muted">No active loans to repay.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Issue a new loan</h2>
+  <p class="muted">
+    Under KES 20,000: 10% per month, due within 1 month.<br>
+    KES 20,000-{{ "{:,.0f}".format(high_loan_ceiling) }}: flat 10% total, 3 monthly installments.<br>
+    Loans above {{ "{:,.0f}".format(high_loan_ceiling) }} still use the same 3-month terms but exceed the normal ceiling - a flag will show on the loan.
+  </p>
+  <form method="post" action="/dashboard/issue-loan">
+    <label for="member_id">Member</label>
+    <select id="member_id" name="member_id" required>
+      {% for m in members %}
+      <option value="{{ m.id }}">{{ m.full_name }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="principal">Loan amount (KES)</label>
+    <input type="number" id="principal" name="principal" min="1" step="1" required>
+
+    <label for="issue_date_field">Issue date</label>
+    <input type="date" id="issue_date_field" name="issue_date_field" required>
+
+    <button type="submit">Issue loan</button>
+  </form>
+</div>
+
+{% endblock %}

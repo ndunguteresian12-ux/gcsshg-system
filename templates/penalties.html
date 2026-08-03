@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Penalties - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/loans">Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Penalties</h2>
+  <a href="/loans" class="row-link">&larr; Loans</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="stat-grid" style="grid-template-columns: 1fr;">
+  <div class="stat-card">
+    <div class="stat-stamp">!</div>
+    <div class="stat-label">Total outstanding penalties</div>
+    <div class="stat-value figure" style="color: var(--red);">{{ "{:,.0f}".format(total_outstanding) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  {% if penalties %}
+  <table>
+    <tr><th>Member</th><th>Type</th><th>Period</th><th class="figure-head">Amount</th><th>Status</th><th></th></tr>
+    {% for p in penalties %}
+    <tr>
+      <td>{{ p.full_name }}</td>
+      <td>{{ "Overdue loan" if p.penalty_type == "overdue_loan" else "Missed contribution" }}</td>
+      <td>{{ p.period_label }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(p.amount) }}</td>
+      <td>
+        {% if p.waived %}<span class="muted">waived</span>
+        {% else %}<span style="color: var(--red); font-weight:600;">owed</span>{% endif %}
+      </td>
+      <td>
+        {% if role == 'chairperson' and not p.waived %}
+        <form method="post" action="/penalties/{{ p.id }}/waive" style="margin:0;">
+          <button type="submit" class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Waive</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No penalties recorded yet. Run the overdue &amp; penalty check from the Loans page to scan for any.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
