@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ run.fiscal_year_label }} - Dividend run{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dividends">&larr; Dividends</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2 style="margin:0;">{{ run.fiscal_year_label }}</h2>
+  <p class="muted">Computed {{ run.computed_at.strftime('%d %b %Y, %H:%M') }} &middot; pool KES {{ "{:,.2f}".format(run.total_interest_pool) }}</p>
+</div>
+
+<div class="card">
+  <table>
+    <tr><th>Member</th><th class="figure-head">Contributed</th><th class="figure-head">Dividend</th></tr>
+    {% for d in dividends %}
+    <tr>
+      <td>{{ d.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(d.total_contribution) }}</td>
+      <td class="figure" style="text-align:right; color: var(--gold); font-weight:600;">{{ "{:,.2f}".format(d.dividend_amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% endblock %}

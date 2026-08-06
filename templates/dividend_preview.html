@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Preview dividend run{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dividends">&larr; Dividends</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2 style="margin:0;">Preview: {{ fiscal_year_label }}</h2>
+  <p class="muted">Pool: KES {{ "{:,.2f}".format(total_interest_pool) }}. Nothing has been saved yet - review below, then confirm.</p>
+</div>
+
+<div class="card">
+  <table>
+    <tr><th>Member</th><th class="figure-head">Contributed</th><th class="figure-head">Weighted</th><th class="figure-head">Dividend</th></tr>
+    {% for r in results %}
+    <tr>
+      <td>{{ r.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.total_contribution) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.weighted_contribution) }}</td>
+      <td class="figure" style="text-align:right; color: var(--gold); font-weight:600;">{{ "{:,.2f}".format(r.dividend_amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <form method="post" action="/dividends/confirm">
+    <input type="hidden" name="fiscal_year_label" value="{{ fiscal_year_label }}">
+    <input type="hidden" name="total_interest_pool" value="{{ total_interest_pool }}">
+    <button type="submit">Confirm and save this dividend run</button>
+  </form>
+  <a href="/dividends" class="btn btn-secondary" style="margin-top:0.6rem;">Cancel - go back</a>
+</div>
+
+{% endblock %}

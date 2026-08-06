@@ -5,7 +5,7 @@
   <a href="/dashboard">Overview</a>
   <a href="/loans">Loans</a>
   <a href="/penalties">Penalties</a>
-  {% if role == 'chairperson' %}<a href="/settings">Settings</a>{% endif %}
+  {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
 </nav>
 {% endblock %}
@@ -22,13 +22,32 @@
 
 <div class="card">
   <table>
-    <tr><th>Name</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th></th></tr>
+    <tr><th>Name</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th>Login</th><th></th></tr>
     {% for m in members %}
     <tr>
       <td>{{ m.full_name }}</td>
       <td>{{ m.phone or "-" }}</td>
       <td><span class="status-active">{{ m.status }}</span></td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(m.total_contributed or 0) }}</td>
+      <td>
+        {% if m.user_id %}
+          <span class="status-active">active</span>
+          {% if role == 'chairperson' %}
+          <form method="post" action="/members/{{ m.id }}/resend-invite" style="margin:0.3rem 0 0;">
+            <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.75rem; width:auto;">Resend link</button>
+          </form>
+          {% endif %}
+        {% else %}
+          {% if role == 'chairperson' %}
+          <form method="post" action="/members/{{ m.id }}/create-login" style="margin:0; display:flex; gap:0.3rem;">
+            <input type="text" name="phone" placeholder="0712345678" required style="width:120px; padding:0.3rem 0.4rem; font-size:0.8rem;">
+            <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.75rem; width:auto;">Create login</button>
+          </form>
+          {% else %}
+          <span class="muted">none</span>
+          {% endif %}
+        {% endif %}
+      </td>
       <td><a class="row-link" href="/statement?member_id={{ m.id }}">Statement &rarr;</a></td>
     </tr>
     {% endfor %}

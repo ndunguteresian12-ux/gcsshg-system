@@ -40,6 +40,7 @@ from calculations import (
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/gcsshg")
 SECRET_KEY = os.environ.get("SESSION_SECRET", "change-me-in-production")
+SITE_URL = os.environ.get("SITE_URL", "http://127.0.0.1:8000")
 signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
 app = FastAPI(title="GCSSHG Management System")
@@ -409,48 +410,55 @@ def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_offi
 # DIVIDENDS
 # ---------------------------------------------------------------------------
 
+def compute_dividend_records(cur):
+    cur.execute("SELECT id, full_name FROM members WHERE status = 'active'")
+    members = cur.fetchall()
+    records = []
+    for m in members:
+        cur.execute(
+            "SELECT EXTRACT(MONTH FROM contribution_month)::int as mon, SUM(amount) as amt "
+            "FROM contributions WHERE member_id = %s GROUP BY mon",
+            (m["id"],),
+        )
+        rows = cur.fetchall()
+        monthly = [(r["mon"], r["amt"]) for r in rows]
+        records.append(MemberContributionRecord(member_id=m["id"], full_name=m["full_name"],
+                                                  monthly_amounts=monthly))
+    return records
+
+
+def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results):
+    total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
+    cur.execute(
+        """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
+                                       total_weighted_contributions, computed_by)
+           VALUES (%s, %s, %s, %s) RETURNING id""",
+        (fiscal_year_label, total_interest_pool, total_weighted, computed_by),
+    )
+    run_id = cur.fetchone()["id"]
+    for r in results:
+        cur.execute(
+            """INSERT INTO dividends (dividend_run_id, member_id, total_contribution,
+                                       weighted_contribution, dividend_amount)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (run_id, r.member_id, r.total_contribution, r.weighted_contribution, r.dividend_amount),
+        )
+    return run_id
+
+
 @app.post("/dividends/run")
 def run_dividend_calculation(payload: DividendRunRequest, chair=Depends(require_chairperson)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            cur.execute("SELECT id, full_name FROM members WHERE status = 'active'")
-            members = cur.fetchall()
-
-            records = []
-            for m in members:
-                cur.execute(
-                    "SELECT EXTRACT(MONTH FROM contribution_month)::int as mon, SUM(amount) as amt "
-                    "FROM contributions WHERE member_id = %s GROUP BY mon",
-                    (m["id"],),
-                )
-                rows = cur.fetchall()
-                monthly = [(r["mon"], r["amt"]) for r in rows]
-                records.append(MemberContributionRecord(member_id=m["id"], full_name=m["full_name"],
-                                                          monthly_amounts=monthly))
-
+            records = compute_dividend_records(cur)
             results = run_dividends(
                 records, payload.total_interest_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
             )
-            total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
-
-            cur.execute(
-                """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
-                                               total_weighted_contributions, computed_by)
-                   VALUES (%s, %s, %s, %s) RETURNING id""",
-                (payload.fiscal_year_label, payload.total_interest_pool, total_weighted, chair["user_id"]),
-            )
-            run_id = cur.fetchone()["id"]
-
-            for r in results:
-                cur.execute(
-                    """INSERT INTO dividends (dividend_run_id, member_id, total_contribution,
-                                               weighted_contribution, dividend_amount)
-                       VALUES (%s, %s, %s, %s, %s)""",
-                    (run_id, r.member_id, r.total_contribution, r.weighted_contribution, r.dividend_amount),
-                )
+            run_id = save_dividend_run(cur, payload.fiscal_year_label, payload.total_interest_pool,
+                                        chair["user_id"], results)
             conn.commit()
             return {
                 "dividend_run_id": run_id,
@@ -458,6 +466,99 @@ def run_dividend_calculation(payload: DividendRunRequest, chair=Depends(require_
             }
     finally:
         conn.close()
+
+
+@app.get("/dividends", response_class=HTMLResponse)
+def dividends_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dividend_runs ORDER BY computed_at DESC")
+            runs = cur.fetchall()
+            cur.execute(
+                "SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments"
+            )
+            total_interest_collected = cur.fetchone()["total"]
+            cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
+            total_already_paid = cur.fetchone()["total"]
+    finally:
+        conn.close()
+    suggested_pool = total_interest_collected - total_already_paid
+    return templates.TemplateResponse(request, "dividends.html", {
+        "runs": runs, "suggested_pool": suggested_pool, "role": session_data["role"],
+    })
+
+
+@app.post("/dividends/preview")
+def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
+                       total_interest_pool: float = Form(...),
+                       session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            records = compute_dividend_records(cur)
+            results = run_dividends(
+                records, Decimal(str(total_interest_pool)),
+                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+            )
+    finally:
+        conn.close()
+    results_sorted = sorted(results, key=lambda r: r.dividend_amount, reverse=True)
+    return templates.TemplateResponse(request, "dividend_preview.html", {
+        "results": results_sorted, "fiscal_year_label": fiscal_year_label,
+        "total_interest_pool": total_interest_pool, "role": session_data["role"],
+    })
+
+
+@app.post("/dividends/confirm")
+def dividends_confirm(fiscal_year_label: str = Form(...), total_interest_pool: float = Form(...),
+                       session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            records = compute_dividend_records(cur)
+            results = run_dividends(
+                records, Decimal(str(total_interest_pool)),
+                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+            )
+            run_id = save_dividend_run(cur, fiscal_year_label, Decimal(str(total_interest_pool)),
+                                        session_data["user_id"], results)
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/dividends/{run_id}", status_code=303)
+
+
+@app.get("/dividends/{run_id}", response_class=HTMLResponse)
+def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+view+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dividend_runs WHERE id = %s", (run_id,))
+            run = cur.fetchone()
+            if not run:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Run not found.</p>")
+            cur.execute(
+                """SELECT d.*, m.full_name FROM dividends d JOIN members m ON m.id = d.member_id
+                   WHERE d.dividend_run_id = %s ORDER BY d.dividend_amount DESC""",
+                (run_id,),
+            )
+            dividends = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_run_detail.html", {
+        "run": run, "dividends": dividends, "role": session_data["role"],
+    })
 
 
 @app.get("/health")
@@ -982,6 +1083,83 @@ def waive_penalty(penalty_id: int, session_data=Depends(get_session_optional)):
     finally:
         conn.close()
     return RedirectResponse(url="/penalties", status_code=303)
+
+
+def _render_invite_link(member_name: str, link: str) -> HTMLResponse:
+    return HTMLResponse(f"""
+    <html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600&family=IBM+Plex+Sans:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+      body {{ font-family:'IBM Plex Sans',sans-serif; background:#F6F5F1; color:#17231C; padding:2rem; max-width:520px; margin:0 auto; }}
+      h1 {{ font-family:'Fraunces',serif; font-size:1.2rem; }}
+      .card {{ background:#fff; border:1px solid #E1E4DE; border-left:3px dashed #E1E4DE; border-radius:8px; padding:1.2rem; }}
+      .link-box {{ background:#F3E4C6; padding:0.8rem; border-radius:6px; word-break:break-all; font-family:monospace; font-size:0.85rem; margin:0.8rem 0; }}
+      a.btn {{ display:inline-block; background:#1F4D3D; color:white; padding:0.6rem 1rem; border-radius:6px; text-decoration:none; margin-top:0.8rem; }}
+    </style></head>
+    <body>
+      <div class="card">
+        <h1>Setup link for {member_name}</h1>
+        <p>Send this link to them over WhatsApp or SMS. It's valid for 48 hours and lets them set their own password.</p>
+        <div class="link-box">{link}</div>
+        <a class="btn" href="/members">&larr; Back to members</a>
+      </div>
+    </body></html>
+    """)
+
+
+@app.post("/members/{member_id}/create-login")
+def create_member_login(member_id: int, phone: str = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+create+member+logins", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+            member = cur.fetchone()
+            if not member:
+                return RedirectResponse(url="/members?error=Member+not+found", status_code=303)
+            if member["user_id"]:
+                return RedirectResponse(url="/members?error=This+member+already+has+a+login", status_code=303)
+            cur.execute("SELECT id FROM users WHERE phone = %s", (phone,))
+            if cur.fetchone():
+                return RedirectResponse(
+                    url="/members?error=That+phone+number+is+already+registered+to+another+account",
+                    status_code=303,
+                )
+            cur.execute(
+                "INSERT INTO users (phone, full_name, password_hash, role) "
+                "VALUES (%s, %s, NULL, 'member') RETURNING id",
+                (phone, member["full_name"]),
+            )
+            user_id = cur.fetchone()["id"]
+            cur.execute("UPDATE members SET user_id = %s, phone = %s WHERE id = %s", (user_id, phone, member_id))
+            conn.commit()
+    finally:
+        conn.close()
+
+    token = signer.dumps({"user_id": user_id, "purpose": "set_password"})
+    link = f"{SITE_URL}/set-password?token={token}"
+    return _render_invite_link(member["full_name"], link)
+
+
+@app.post("/members/{member_id}/resend-invite")
+def resend_member_invite(member_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+resend+invites", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT m.*, u.id as uid FROM members m JOIN users u ON u.id = m.user_id WHERE m.id = %s",
+                        (member_id,))
+            row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return RedirectResponse(url="/members?error=This+member+has+no+login+yet", status_code=303)
+
+    token = signer.dumps({"user_id": row["uid"], "purpose": "set_password"})
+    link = f"{SITE_URL}/set-password?token={token}"
+    return _render_invite_link(row["full_name"], link)
 
 
 @app.post("/dashboard/add-member")

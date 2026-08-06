@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Dividends - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/loans">Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Dividends</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Run a new dividend payout</h2>
+  <p class="muted">
+    Suggested pool: interest collected so far minus what's already been paid out as dividends
+    = <strong class="figure">KES {{ "{:,.0f}".format(suggested_pool) }}</strong>.
+    You can adjust this before running - nothing is saved until you confirm on the next screen.
+  </p>
+  <form method="post" action="/dividends/preview">
+    <label for="fiscal_year_label">Fiscal year label</label>
+    <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. Mar 2025 - Jan 2026" required>
+
+    <label for="total_interest_pool">Total interest pool to distribute (KES)</label>
+    <input type="number" id="total_interest_pool" name="total_interest_pool" step="0.01" min="0"
+           value="{{ '%.2f' % suggested_pool }}" required>
+
+    <button type="submit">Preview dividend split</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Past dividend runs</h2>
+  {% if runs %}
+  <table>
+    <tr><th>Fiscal year</th><th class="figure-head">Pool</th><th>Computed</th><th></th></tr>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.fiscal_year_label }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.total_interest_pool) }}</td>
+      <td>{{ r.computed_at.strftime('%d %b %Y') }}</td>
+      <td><a class="row-link" href="/dividends/{{ r.id }}">View &rarr;</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No dividend runs yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
