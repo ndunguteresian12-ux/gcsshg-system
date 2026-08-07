@@ -92,15 +92,23 @@ def billing_periods_elapsed(issue_date: date, as_of: date, period_months: int) -
     return ceil(total_months / period_months)
 
 
-def loan_interest_due(principal: Decimal, issue_date: date, as_of: date, terms: LoanTerms = None) -> Decimal:
+def loan_interest_due(principal: Decimal, issue_date: date, as_of: date, terms: LoanTerms = None,
+                       override_periods: int = None) -> Decimal:
     """
     Total interest owed on a loan.
     - low tier: 10% per elapsed month, keeps accruing indefinitely if unpaid (unchanged behavior)
     - mid tier: FLAT 10% of original principal, one-time - does not grow with lateness
       (lateness cost is the separate overdue penalty, not extra interest)
+    - override_periods: if set, IGNORES elapsed time entirely and charges exactly this many
+      periods' worth of interest. Use this for loans that existed before this system was
+      set up, so entering them late doesn't retroactively compound interest all the way to
+      today - specify how many periods were actually due instead.
     """
     principal = Decimal(principal)
     terms = terms or classify_loan(principal)
+    if override_periods is not None:
+        interest = principal * (terms.rate_percent / Decimal("100")) * override_periods
+        return interest.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if terms.tier == "low":
         periods = billing_periods_elapsed(issue_date, as_of, terms.period_months)
         interest = principal * (terms.rate_percent / Decimal("100")) * periods
@@ -110,10 +118,10 @@ def loan_interest_due(principal: Decimal, issue_date: date, as_of: date, terms: 
 
 
 def loan_balance_due(principal: Decimal, amount_repaid: Decimal, issue_date: date, as_of: date,
-                      terms: LoanTerms = None) -> Decimal:
+                      terms: LoanTerms = None, override_periods: int = None) -> Decimal:
     """Outstanding balance = principal + accrued interest - repayments made so far."""
     terms = terms or classify_loan(principal)
-    total_owed = Decimal(principal) + loan_interest_due(principal, issue_date, as_of, terms)
+    total_owed = Decimal(principal) + loan_interest_due(principal, issue_date, as_of, terms, override_periods)
     return (total_owed - Decimal(amount_repaid)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 

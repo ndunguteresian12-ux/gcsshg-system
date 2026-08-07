@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Edit loan{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans">&larr; Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Edit loan - {{ loan.full_name }}</h2>
+</div>
+
+<div class="card">
+  <form method="post" action="/loans/{{ loan.id }}/edit">
+    <label for="principal">Loan amount (KES)</label>
+    <input type="number" id="principal" name="principal" min="1" step="1" value="{{ loan.principal }}" required>
+
+    <label for="issue_date_field">Issue date</label>
+    <input type="date" id="issue_date_field" name="issue_date_field" value="{{ loan.issue_date }}" required>
+
+    <label for="interest_override_periods">
+      Interest override - months of interest actually due (optional)
+    </label>
+    <input type="number" id="interest_override_periods" name="interest_override_periods" min="0" step="1"
+           value="{{ loan.interest_override_periods if loan.interest_override_periods is not none else '' }}"
+           placeholder="Leave blank for normal calculation">
+    <p class="muted" style="margin-top:0.3rem;">
+      Use this for loans that existed before this system - it fixes the interest at exactly this many
+      periods instead of calculating from the issue date to today, so entering an old loan late
+      doesn't overcharge interest. Leave blank for loans issued through the system normally.
+    </p>
+
+    <button type="submit">Save changes</button>
+  </form>
+</div>
+
+{% endblock %}

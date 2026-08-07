@@ -79,12 +79,13 @@ def build_loan_detail(cur, loan, as_of, penalty_amount):
     owed for a single loan - used consistently everywhere a loan is displayed.
     """
     terms = terms_from_loan_row(loan)
+    override = loan.get("interest_override_periods")
     cur.execute(
         "SELECT COALESCE(SUM(amount), 0) as repaid FROM loan_repayments WHERE loan_id = %s",
         (loan["id"],),
     )
     repaid = cur.fetchone()["repaid"]
-    balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms)
+    balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
     due = loan["due_date"]
     overdue = is_loan_overdue(due, balance, as_of) if due else False
     overdue_months = loan_overdue_months(due, as_of) if overdue else 0
@@ -170,6 +171,7 @@ class LoanCreate(BaseModel):
     member_id: int
     principal: Decimal
     issue_date: Optional[date] = None
+    interest_override_periods: Optional[int] = None
 
 
 class RepaymentCreate(BaseModel):
@@ -347,10 +349,11 @@ def issue_loan(payload: LoanCreate, officer=Depends(require_loan_officer)):
             due_date = compute_due_date(issue_date, terms)
             cur.execute(
                 """INSERT INTO loans (member_id, principal, issue_date, due_date, interest_tier,
-                                       interest_rate, period_months, approved_by)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
+                                       interest_rate, period_months, approved_by, interest_override_periods)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *""",
                 (payload.member_id, payload.principal, issue_date, due_date,
-                 terms.tier, terms.rate_percent, terms.period_months, officer["user_id"]),
+                 terms.tier, terms.rate_percent, terms.period_months, officer["user_id"],
+                 payload.interest_override_periods),
             )
             row = cur.fetchone()
             conn.commit()
@@ -369,9 +372,10 @@ def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_offi
             if not loan:
                 raise HTTPException(status_code=404, detail="Loan not found")
             terms = terms_from_loan_row(loan)
+            override = loan.get("interest_override_periods")
 
             payment_date = payload.payment_date or date.today()
-            interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms)
+            interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms, override)
             cur.execute(
                 "SELECT COALESCE(SUM(interest_component),0) as paid_interest FROM loan_repayments WHERE loan_id = %s",
                 (payload.loan_id,),
@@ -396,7 +400,7 @@ def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_offi
                 (payload.loan_id,),
             )
             total_repaid = cur.fetchone()["total_repaid"]
-            full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms)
+            full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms, override)
             if full_balance <= 0:
                 cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s",
                             (payment_date, payload.loan_id))
@@ -800,9 +804,12 @@ def loan_statement_page(loan_id: int, request: Request, session_data=Depends(get
 
 @app.post("/dashboard/issue-loan")
 def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
-                     issue_date_field: str = Form(...), session_data=Depends(get_session_optional)):
+                     issue_date_field: str = Form(...),
+                     interest_override_periods: Optional[str] = Form(None),
+                     session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+issue+loans", status_code=303)
+    override_val = int(interest_override_periods) if interest_override_periods else None
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -820,10 +827,10 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
             due_date = compute_due_date(issue_date, terms)
             cur.execute(
                 """INSERT INTO loans (member_id, principal, issue_date, due_date, interest_tier,
-                                       interest_rate, period_months, approved_by)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                                       interest_rate, period_months, approved_by, interest_override_periods)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (member_id, principal, issue_date, due_date, terms.tier, terms.rate_percent,
-                 terms.period_months, session_data["user_id"]),
+                 terms.period_months, session_data["user_id"], override_val),
             )
             conn.commit()
     finally:
@@ -844,10 +851,11 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
             if not loan:
                 return RedirectResponse(url="/loans?error=Loan+not+found", status_code=303)
             terms = terms_from_loan_row(loan)
+            override = loan.get("interest_override_periods")
 
             payment_date = date.fromisoformat(payment_date_field)
             amount_dec = Decimal(str(amount))
-            interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms)
+            interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms, override)
             cur.execute(
                 "SELECT COALESCE(SUM(interest_component),0) as paid_interest FROM loan_repayments WHERE loan_id = %s",
                 (loan_id,),
@@ -870,7 +878,7 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                 (loan_id,),
             )
             total_repaid = cur.fetchone()["total_repaid"]
-            full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms)
+            full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms, override)
             if full_balance <= 0:
                 cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s",
                             (payment_date, loan_id))
@@ -894,11 +902,32 @@ def delete_loan(loan_id: int, session_data=Depends(get_session_optional)):
     return RedirectResponse(url="/loans", status_code=303)
 
 
+@app.get("/loans/{loan_id}/edit", response_class=HTMLResponse)
+def edit_loan_page(loan_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+can+edit+loans", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id WHERE l.id = %s",
+                (loan_id,),
+            )
+            loan = cur.fetchone()
+    finally:
+        conn.close()
+    if not loan:
+        return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
+    return templates.TemplateResponse(request, "loan_edit.html", {"loan": loan, "role": session_data["role"]})
+
+
 @app.post("/loans/{loan_id}/edit")
 def edit_loan(loan_id: int, principal: float = Form(...), issue_date_field: str = Form(...),
+              interest_override_periods: Optional[str] = Form(None),
               session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/loans?error=Only+the+chairperson+can+edit+loans", status_code=303)
+    override_val = int(interest_override_periods) if interest_override_periods else None
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -916,9 +945,10 @@ def edit_loan(loan_id: int, principal: float = Form(...), issue_date_field: str 
             due_date = compute_due_date(issue_date, terms)
             cur.execute(
                 """UPDATE loans SET principal = %s, issue_date = %s, due_date = %s,
-                   interest_tier = %s, interest_rate = %s, period_months = %s WHERE id = %s""",
+                   interest_tier = %s, interest_rate = %s, period_months = %s,
+                   interest_override_periods = %s WHERE id = %s""",
                 (principal, issue_date, due_date, terms.tier, terms.rate_percent,
-                 terms.period_months, loan_id),
+                 terms.period_months, override_val, loan_id),
             )
             conn.commit()
     finally:

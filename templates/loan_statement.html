@@ -36,6 +36,11 @@
   <span class="badge {{ 'badge-low' if loan.interest_tier == 'low' else 'badge-high' }}">
     {{ loan.interest_rate }}% / {{ loan.period_months }}mo tier
   </span>
+  {% if loan.interest_override_periods is not none %}
+  <span class="badge" style="background:#eee; color:#555;">
+    Interest fixed at {{ loan.interest_override_periods }} period(s) - legacy loan override
+  </span>
+  {% endif %}
   {% if loan.is_overdue %}
   <span style="color: var(--red); font-weight:600; margin-left:0.6rem;">Overdue ({{ loan.overdue_months }} month{{ 's' if loan.overdue_months != 1 else '' }})</span>
   {% endif %}

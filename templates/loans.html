@@ -62,6 +62,9 @@
         <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
           {{ l.interest_rate }}% / {{ l.period_months }}mo
         </span>
+        {% if l.interest_override_periods is not none %}
+        <span class="badge" style="background:#eee; color:#555;" title="Interest fixed at {{ l.interest_override_periods }} period(s), not date-calculated">fixed</span>
+        {% endif %}
       </td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
       <td class="figure" style="text-align:right;">
@@ -73,7 +76,8 @@
       </td>
       <td>
         {% if role == 'chairperson' %}
-        <form method="post" action="/loans/{{ l.id }}/delete" onsubmit="return confirm('Delete this loan and all its repayment history? This cannot be undone.');" style="margin:0;">
+        <a href="/loans/{{ l.id }}/edit" class="row-link" style="margin-right:0.6rem;">Edit</a>
+        <form method="post" action="/loans/{{ l.id }}/delete" onsubmit="return confirm('Delete this loan and all its repayment history? This cannot be undone.');" style="margin:0; display:inline;">
           <button type="submit" class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Delete</button>
         </form>
         {% endif %}
@@ -137,6 +141,16 @@
 
     <label for="issue_date_field">Issue date</label>
     <input type="date" id="issue_date_field" name="issue_date_field" required>
+
+    <label for="interest_override_periods">
+      Legacy loan? Months of interest actually due (optional)
+    </label>
+    <input type="number" id="interest_override_periods" name="interest_override_periods" min="0" step="1"
+           placeholder="Leave blank for normal calculation">
+    <p class="muted" style="margin-top:0.3rem;">
+      For a loan issued before this system existed, fill this in so interest is fixed at exactly this
+      many periods instead of compounding from the issue date to today.
+    </p>
 
     <button type="submit">Issue loan</button>
   </form>
