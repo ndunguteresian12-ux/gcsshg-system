@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Bank balance - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/loans">Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Bank / SACCO balance</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="stat-grid" style="grid-template-columns: 1fr;">
+  <div class="stat-card">
+    <div class="stat-stamp">B</div>
+    <div class="stat-label">Current balance</div>
+    <div class="stat-value figure" style="font-size:1.9rem;">{{ "{:,.0f}".format(current_balance) }}</div>
+  </div>
+</div>
+
+{% if role in ['chairperson', 'treasurer'] %}
+<div class="card">
+  <h2>Update balance</h2>
+  <p class="muted">Record the current amount held in the bank/SACCO account, e.g. after checking a statement.</p>
+  <form method="post" action="/bank-balance/update">
+    <label for="amount">Current balance (KES)</label>
+    <input type="number" id="amount" name="amount" step="0.01" min="0" required>
+
+    <label for="note">Note (optional)</label>
+    <input type="text" id="note" name="note" placeholder="e.g. after August deposit">
+
+    <button type="submit">Save</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>History</h2>
+  {% if history %}
+  <table>
+    <tr><th>Date</th><th class="figure-head">Amount</th><th>Note</th><th>Recorded by</th></tr>
+    {% for h in history %}
+    <tr>
+      <td>{{ h.recorded_at.strftime('%d %b %Y') }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(h.amount) }}</td>
+      <td>{{ h.note or "-" }}</td>
+      <td>{{ h.recorded_by_name or "-" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No balance recorded yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -315,12 +315,23 @@ def member_statement(member_id: int, session_data=Depends(require_session)):
             )
             dividend_history = cur.fetchall()
 
+            cur.execute(
+                "SELECT * FROM penalties WHERE member_id = %s ORDER BY waived ASC, created_at DESC",
+                (member_id,),
+            )
+            penalties = cur.fetchall()
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
+            group_total_contributions = cur.fetchone()["total"]
+
             return {
                 "member": member,
                 "total_contributed": total_contributed,
                 "contributions": contributions,
                 "loans": loan_details,
                 "dividend_history": dividend_history,
+                "penalties": penalties,
+                "group_total_contributions": group_total_contributions,
             }
     finally:
         conn.close()
@@ -563,6 +574,44 @@ def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_
     return templates.TemplateResponse(request, "dividend_run_detail.html", {
         "run": run, "dividends": dividends, "role": session_data["role"],
     })
+
+
+@app.get("/bank-balance", response_class=HTMLResponse)
+def bank_balance_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT b.*, u.full_name as recorded_by_name FROM bank_balance_log b
+                   LEFT JOIN users u ON u.id = b.recorded_by ORDER BY b.recorded_at DESC"""
+            )
+            history = cur.fetchall()
+    finally:
+        conn.close()
+    current_balance = history[0]["amount"] if history else Decimal("0")
+    return templates.TemplateResponse(request, "bank_balance.html", {
+        "history": history, "current_balance": current_balance, "role": session_data["role"],
+    })
+
+
+@app.post("/bank-balance/update")
+def bank_balance_update(amount: float = Form(...), note: str = Form(""),
+                         session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/bank-balance?error=Only+the+chairperson+or+treasurer+can+update+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO bank_balance_log (amount, note, recorded_by) VALUES (%s, %s, %s)",
+                (amount, note or None, session_data["user_id"]),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/bank-balance", status_code=303)
 
 
 @app.get("/health")
@@ -1274,15 +1323,8 @@ def statement_page(request: Request, member_id: Optional[int] = None,
 
             cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (mid,))
             loans = cur.fetchall()
-            loan_details = []
-            for loan in loans:
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
-                    (loan["id"],),
-                )
-                repaid = cur.fetchone()["repaid"]
-                balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], date.today())
-                loan_details.append({**loan, "amount_repaid": repaid, "current_balance": balance})
+            settings = get_settings(cur)
+            loan_details = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
 
             cur.execute(
                 """SELECT d.dividend_amount, d.total_contribution, r.fiscal_year_label, r.computed_at
@@ -1291,11 +1333,22 @@ def statement_page(request: Request, member_id: Optional[int] = None,
                 (mid,),
             )
             dividends = cur.fetchall()
+
+            cur.execute(
+                "SELECT * FROM penalties WHERE member_id = %s ORDER BY waived ASC, created_at DESC", (mid,)
+            )
+            penalties = cur.fetchall()
+            penalties_owed = sum((p["amount"] for p in penalties if not p["waived"]), Decimal("0"))
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
+            group_total_contributions = cur.fetchone()["total"]
     finally:
         conn.close()
 
     return templates.TemplateResponse(request, "statement.html", {
         "member": member, "contributions": contributions,
         "total": total, "loans": loan_details, "dividends": dividends,
+        "penalties": penalties, "penalties_owed": penalties_owed,
+        "group_total_contributions": group_total_contributions,
         "role": session_data["role"],
     })

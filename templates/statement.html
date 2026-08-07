@@ -13,11 +13,16 @@
   <div class="muted">Member since {{ member.join_date }}</div>
 </div>
 
-<div class="stat-grid" style="grid-template-columns: 1fr;">
+<div class="stat-grid">
   <div class="stat-card">
     <div class="stat-stamp">Σ</div>
-    <div class="stat-label">Total contributed to date</div>
-    <div class="stat-value figure" style="font-size:1.9rem;">{{ "{:,.0f}".format(total) }}</div>
+    <div class="stat-label">Your total contributed</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-stamp">G</div>
+    <div class="stat-label">Group's total contributions</div>
+    <div class="stat-value figure gold">{{ "{:,.0f}".format(group_total_contributions) }}</div>
   </div>
 </div>
 
@@ -39,23 +44,51 @@
   <h2>Loans</h2>
   {% if loans %}
   <table>
-    <tr><th>Issued</th><th class="figure-head">Principal</th><th>Rate</th><th class="figure-head">Balance</th><th>Status</th></tr>
+    <tr>
+      <th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
+      <th class="figure-head">Interest</th><th>Rate</th><th class="figure-head">Balance</th><th>Status</th>
+    </tr>
     {% for l in loans %}
     <tr>
       <td>{{ l.issue_date }}</td>
+      <td>{{ l.due_date }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance - l.principal + l.amount_repaid) }}</td>
       <td>
         <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
           {{ l.interest_rate }}% / {{ l.period_months }}mo
         </span>
       </td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
-      <td>{{ l.status }}</td>
+      <td>
+        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
+        {% else %}{{ l.status }}{% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
   {% else %}
   <p class="muted">No loans on record.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Your penalties</h2>
+  {% if penalties %}
+  <p class="muted">Total outstanding: <strong class="figure" style="color: var(--red);">KES {{ "{:,.0f}".format(penalties_owed) }}</strong></p>
+  <table>
+    <tr><th>Type</th><th>Period</th><th class="figure-head">Amount</th><th>Status</th></tr>
+    {% for p in penalties %}
+    <tr>
+      <td>{{ "Overdue loan" if p.penalty_type == "overdue_loan" else "Missed contribution" }}</td>
+      <td>{{ p.period_label }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(p.amount) }}</td>
+      <td>{% if p.waived %}<span class="muted">waived</span>{% else %}<span style="color: var(--red); font-weight:600;">owed</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No penalties on record.</p>
   {% endif %}
 </div>
 
