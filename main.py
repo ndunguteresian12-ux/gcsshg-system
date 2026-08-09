@@ -15,6 +15,7 @@ This is an MVP scaffold covering the core workflow:
 
 import os
 import json
+import math
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
@@ -454,15 +455,17 @@ def compute_dividend_records(cur):
 
 
 def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results,
-                       gross_pool=None, admin_amount=Decimal("0"), transaction_cost_amount=Decimal("0")):
+                       gross_pool=None, admin_amount=Decimal("0"), transaction_cost_amount=Decimal("0"),
+                       admin_label="Administration", transaction_label="Transaction costs"):
     total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
     cur.execute(
         """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
                                        total_weighted_contributions, computed_by,
-                                       gross_pool, admin_amount, transaction_cost_amount)
-           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                       gross_pool, admin_amount, transaction_cost_amount,
+                                       admin_label, transaction_label)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (fiscal_year_label, total_interest_pool, total_weighted, computed_by,
-         gross_pool, admin_amount, transaction_cost_amount),
+         gross_pool, admin_amount, transaction_cost_amount, admin_label, transaction_label),
     )
     run_id = cur.fetchone()["id"]
     for r in results:
@@ -621,6 +624,8 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
         "transaction_amount": transaction_amount, "member_pool": member_pool,
         "admin_percent": settings["dividend_admin_percent"],
         "transaction_percent": settings["dividend_transaction_percent"],
+        "admin_label": settings["dividend_admin_label"],
+        "transaction_label": settings["dividend_transaction_label"],
     })
 
 
@@ -645,7 +650,9 @@ def dividends_confirm(fiscal_year_label: str = Form(...), total_interest_pool: f
             run_id = save_dividend_run(cur, fiscal_year_label, member_pool,
                                         session_data["user_id"], results,
                                         gross_pool=gross, admin_amount=admin_amount,
-                                        transaction_cost_amount=transaction_amount)
+                                        transaction_cost_amount=transaction_amount,
+                                        admin_label=settings["dividend_admin_label"],
+                                        transaction_label=settings["dividend_transaction_label"])
             conn.commit()
     finally:
         conn.close()
@@ -1385,6 +1392,8 @@ def settings_update(
     penalty_amount: float = Form(...),
     dividend_admin_percent: float = Form(...),
     dividend_transaction_percent: float = Form(...),
+    dividend_admin_label: str = Form("Administration"),
+    dividend_transaction_label: str = Form("Transaction costs"),
     session_data=Depends(get_session_optional),
 ):
     if not session_data or session_data["role"] != "chairperson":
@@ -1402,11 +1411,14 @@ def settings_update(
                    low_loan_interest_rate = %s, high_loan_interest_rate = %s,
                    low_loan_deadline_months = %s, high_loan_deadline_months = %s,
                    penalty_amount = %s, dividend_admin_percent = %s, dividend_transaction_percent = %s,
+                   dividend_admin_label = %s, dividend_transaction_label = %s,
                    updated_at = now()""",
                 (min_monthly_contribution, low_loan_ceiling, high_loan_ceiling,
                  low_loan_interest_rate, high_loan_interest_rate,
                  low_loan_deadline_months, high_loan_deadline_months, penalty_amount,
-                 dividend_admin_percent, dividend_transaction_percent),
+                 dividend_admin_percent, dividend_transaction_percent,
+                 dividend_admin_label.strip() or "Administration",
+                 dividend_transaction_label.strip() or "Transaction costs"),
             )
             conn.commit()
     finally:
@@ -1458,29 +1470,54 @@ def run_penalty_check(session_data=Depends(get_session_optional)):
                             inserted += 1
 
             # --- Missed monthly contribution penalties ---
+            # Cumulative check: a member is only penalized if their TOTAL contribution
+            # to date falls short of (min_monthly_contribution x months elapsed since
+            # joining). Someone who paid 1000 in March and 0 in April is NOT penalized -
+            # their running total already covers both months. This avoids fining
+            # members who front-load or pay unevenly but keep pace overall.
             cur.execute("SELECT id, join_date FROM members WHERE status = 'active'")
             members = cur.fetchall()
             current_month_start = today.replace(day=1)
+            min_contribution = settings["min_monthly_contribution"]
             for m in members:
-                cursor_month = m["join_date"].replace(day=1)
-                while cursor_month < current_month_start:  # only fully-completed months
-                    cur.execute(
-                        "SELECT COALESCE(SUM(amount),0) as total FROM contributions "
-                        "WHERE member_id = %s AND contribution_month = %s",
-                        (m["id"], cursor_month),
-                    )
-                    total = cur.fetchone()["total"]
-                    if total < settings["min_monthly_contribution"]:
-                        period_label = f"{cursor_month.year}-{cursor_month.month:02d}"
-                        cur.execute(
-                            """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
-                               VALUES (%s, 'missed_contribution', NULL, %s, %s)
-                               ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
-                            (m["id"], period_label, penalty_amount),
-                        )
-                        if cur.rowcount:
-                            inserted += 1
+                join_month = m["join_date"].replace(day=1)
+                months_elapsed = 0
+                cursor_month = join_month
+                while cursor_month < current_month_start:
+                    months_elapsed += 1
                     cursor_month = add_months(cursor_month, 1)
+                if months_elapsed <= 0:
+                    continue
+
+                expected_cumulative = min_contribution * months_elapsed
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
+                    (m["id"],),
+                )
+                actual_cumulative = cur.fetchone()["total"]
+
+                if actual_cumulative >= expected_cumulative:
+                    continue  # caught up overall - no penalty, regardless of which months were light
+
+                shortfall = expected_cumulative - actual_cumulative
+                shortfall_months = math.ceil(shortfall / min_contribution)
+
+                cur.execute(
+                    "SELECT COUNT(*) as count FROM penalties WHERE member_id = %s AND penalty_type = 'missed_contribution'",
+                    (m["id"],),
+                )
+                already_charged = cur.fetchone()["count"]
+
+                for n in range(already_charged + 1, shortfall_months + 1):
+                    period_label = f"shortfall-{n}"
+                    cur.execute(
+                        """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
+                           VALUES (%s, 'missed_contribution', NULL, %s, %s)
+                           ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
+                        (m["id"], period_label, penalty_amount),
+                    )
+                    if cur.rowcount:
+                        inserted += 1
             conn.commit()
     finally:
         conn.close()
