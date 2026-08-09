@@ -60,9 +60,13 @@
           {% endif %}
         {% else %}
           {% if role == 'chairperson' %}
-          <form method="post" action="/members/{{ m.id }}/create-login" style="margin:0; display:flex; gap:0.3rem;">
-            <input type="text" name="phone" placeholder="0712345678" required style="width:120px; padding:0.3rem 0.4rem; font-size:0.8rem;">
-            <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.75rem; width:auto;">Create login</button>
+          <form method="post" action="/members/{{ m.id }}/create-login" style="margin:0 0 0.3rem; display:flex; gap:0.3rem;">
+            <input type="text" name="phone" placeholder="New phone" required style="width:110px; padding:0.3rem 0.4rem; font-size:0.78rem;">
+            <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.72rem; width:auto;">Create login</button>
+          </form>
+          <form method="post" action="/members/{{ m.id }}/link-existing" style="margin:0; display:flex; gap:0.3rem;">
+            <input type="text" name="existing_phone" placeholder="Existing officer phone" required style="width:130px; padding:0.3rem 0.4rem; font-size:0.78rem;">
+            <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.72rem; width:auto;">Link existing</button>
           </form>
           {% else %}
           <span class="muted">none</span>

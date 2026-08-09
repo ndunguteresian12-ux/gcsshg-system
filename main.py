@@ -1584,6 +1584,41 @@ def create_member_login(member_id: int, phone: str = Form(...), session_data=Dep
     return _render_invite_link(member["full_name"], link)
 
 
+@app.post("/members/{member_id}/link-existing")
+def link_existing_account(member_id: int, existing_phone: str = Form(...),
+                           session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+link+accounts", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+            member = cur.fetchone()
+            if not member:
+                return RedirectResponse(url="/members?error=Member+not+found", status_code=303)
+            if member["user_id"]:
+                return RedirectResponse(url="/members?error=This+member+already+has+a+login", status_code=303)
+            cur.execute("SELECT id, full_name FROM users WHERE phone = %s", (existing_phone,))
+            existing_user = cur.fetchone()
+            if not existing_user:
+                return RedirectResponse(
+                    url=f"/members?error=No+account+found+with+phone+{existing_phone}", status_code=303
+                )
+            cur.execute("SELECT id FROM members WHERE user_id = %s", (existing_user["id"],))
+            if cur.fetchone():
+                return RedirectResponse(
+                    url="/members?error=That+account+is+already+linked+to+a+different+member", status_code=303
+                )
+            cur.execute(
+                "UPDATE members SET user_id = %s, phone = %s WHERE id = %s",
+                (existing_user["id"], existing_phone, member_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/members", status_code=303)
+
+
 @app.post("/members/{member_id}/resend-invite")
 def resend_member_invite(member_id: int, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
