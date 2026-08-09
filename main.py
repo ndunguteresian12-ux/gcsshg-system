@@ -59,6 +59,16 @@ def get_settings(cur):
     return cur.fetchone()
 
 
+def time_greeting():
+    """Simple time-of-day greeting, adjusted for East Africa Time (UTC+3)."""
+    hour = (datetime.utcnow().hour + 3) % 24
+    if hour < 12:
+        return "Good morning"
+    elif hour < 17:
+        return "Good afternoon"
+    return "Good evening"
+
+
 def terms_from_loan_row(loan) -> LoanTerms:
     """
     Reconstructs a loan's ORIGINAL terms from what was stored at issuance,
@@ -883,6 +893,9 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT full_name FROM users WHERE id = %s", (session_data["user_id"],))
+            officer_name = cur.fetchone()["full_name"]
+
             cur.execute("SELECT id FROM members WHERE user_id = %s", (session_data["user_id"],))
             own = cur.fetchone()
             own_member_id = own["id"] if own else None
@@ -935,6 +948,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         conn.close()
     return templates.TemplateResponse(request, "dashboard.html", {
         "members": members, "role": session_data["role"], "own_member_id": own_member_id,
+        "officer_name": officer_name, "greeting": time_greeting(),
         "member_count": member_count,
         "total_contributions": total_contributions,
         "total_loans_outstanding": total_loans_outstanding,
@@ -958,11 +972,14 @@ def members_page(request: Request, session_data=Depends(get_session_optional)):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT m.*, COALESCE(SUM(c.amount), 0) as total_contributed
+                """SELECT m.*, COALESCE(SUM(c.amount), 0) as total_contributed, u.role as officer_role
                    FROM members m
                    LEFT JOIN contributions c ON c.member_id = m.id
+                   LEFT JOIN users u ON u.id = m.user_id
                    WHERE m.status = 'active'
-                   GROUP BY m.id ORDER BY m.full_name"""
+                   GROUP BY m.id, u.role
+                   ORDER BY CASE u.role WHEN 'chairperson' THEN 0 WHEN 'treasurer' THEN 1
+                            WHEN 'secretary' THEN 2 ELSE 3 END, m.full_name"""
             )
             members = cur.fetchall()
     finally:
@@ -1678,6 +1695,6 @@ def statement_page(request: Request, member_id: Optional[int] = None,
         "total": total, "loans": loan_details, "dividends": dividends,
         "penalties": penalties, "penalties_owed": penalties_owed,
         "group_total_contributions": group_total_contributions,
-        "own_chart_json": own_chart_json,
+        "own_chart_json": own_chart_json, "greeting": time_greeting(),
         "role": session_data["role"],
     })

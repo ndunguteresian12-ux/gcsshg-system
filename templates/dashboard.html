@@ -14,6 +14,11 @@
 {% endblock %}
 {% block content %}
 
+<div class="greeting-banner">
+  <h1>{{ greeting }}, {{ officer_name.split(' ')[0] }} &#128075;</h1>
+  <p>{{ role|capitalize }} dashboard &middot; Githiga Comprehensive School Self Help Group</p>
+</div>
+
 <div class="section-title">
   <h2 style="font-size:1.3rem;">Group overview</h2>
   <span class="muted">{{ member_count }} members</span>
@@ -24,25 +29,25 @@
 {% endif %}
 
 <div class="stat-grid">
-  <div class="stat-card">
+  <div class="stat-card solid-forest">
     <div class="stat-stamp">Σ</div>
     <div class="stat-label">Total contributions</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_contributions) }}</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card solid-teal">
     <div class="stat-stamp">L</div>
     <div class="stat-label">Loans issued</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_issued) }}</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card solid-red">
     <div class="stat-stamp">B</div>
     <div class="stat-label">Loans outstanding</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_outstanding) }}</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card solid-gold">
     <div class="stat-stamp">%</div>
     <div class="stat-label">Interest earned</div>
-    <div class="stat-value figure gold">{{ "{:,.0f}".format(total_interest_earned) }}</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_interest_earned) }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-stamp">D</div>

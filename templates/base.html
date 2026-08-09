@@ -101,7 +101,58 @@
     padding: 1rem 1.1rem 1.1rem;
     position: relative;
     overflow: hidden;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
   }
+  .stat-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px rgba(20, 50, 41, 0.12);
+  }
+  .card {
+    transition: box-shadow 0.15s ease;
+  }
+  .card:hover {
+    box-shadow: 0 4px 14px rgba(20, 50, 41, 0.06);
+  }
+
+  /* Solid-color card variants for a livelier dashboard */
+  .stat-card.solid-forest { background: var(--forest); border: none; }
+  .stat-card.solid-forest .stat-label { color: rgba(255,255,255,0.75); }
+  .stat-card.solid-forest .stat-value { color: white; }
+  .stat-card.solid-forest .stat-stamp { border-color: rgba(255,255,255,0.55); color: white; }
+
+  .stat-card.solid-gold { background: var(--gold); border: none; }
+  .stat-card.solid-gold .stat-label { color: rgba(255,255,255,0.85); }
+  .stat-card.solid-gold .stat-value { color: white; }
+  .stat-card.solid-gold .stat-stamp { border-color: rgba(255,255,255,0.7); color: white; }
+
+  .stat-card.solid-teal { background: #2D6E8E; border: none; }
+  .stat-card.solid-teal .stat-label { color: rgba(255,255,255,0.8); }
+  .stat-card.solid-teal .stat-value { color: white; }
+  .stat-card.solid-teal .stat-stamp { border-color: rgba(255,255,255,0.6); color: white; }
+
+  .stat-card.solid-red { background: var(--red); border: none; }
+  .stat-card.solid-red .stat-label { color: rgba(255,255,255,0.85); }
+  .stat-card.solid-red .stat-value { color: white; }
+  .stat-card.solid-red .stat-stamp { border-color: rgba(255,255,255,0.7); color: white; }
+
+  .greeting-banner {
+    background: linear-gradient(120deg, var(--forest), var(--forest-dark));
+    color: white;
+    border-radius: 10px;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 1.1rem;
+  }
+  .greeting-banner h1 { color: white; margin: 0 0 0.2rem; font-size: 1.3rem; }
+  .greeting-banner p { color: rgba(255,255,255,0.8); margin: 0; font-size: 0.88rem; }
+
+  .role-badge {
+    display: inline-block; padding: 0.15rem 0.55rem; border-radius: 20px;
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+  }
+  .role-chairperson { background: var(--gold-soft); color: #8a611d; }
+  .role-treasurer { background: #dceee4; color: var(--forest-dark); }
+  .role-secretary { background: #e3ecf5; color: #2D6E8E; }
+
   .stat-stamp {
     position: absolute;
     top: 0.7rem;

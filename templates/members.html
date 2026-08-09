@@ -27,10 +27,16 @@
 
 <div class="card">
   <table>
-    <tr><th>Name</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th>Login</th><th></th><th></th></tr>
+    <tr><th>Name</th><th>Role</th><th>Phone</th><th>Status</th><th class="figure-head">Total</th><th>Login</th><th></th><th></th></tr>
     {% for m in members %}
     <tr>
       <td>{{ m.full_name }}</td>
+      <td>
+        {% if m.officer_role == 'chairperson' %}<span class="role-badge role-chairperson">Chairperson</span>
+        {% elif m.officer_role == 'treasurer' %}<span class="role-badge role-treasurer">Treasurer</span>
+        {% elif m.officer_role == 'secretary' %}<span class="role-badge role-secretary">Secretary</span>
+        {% else %}<span class="muted">Member</span>{% endif %}
+      </td>
       <td>{{ m.phone or "-" }}</td>
       <td><span class="status-active">{{ m.status }}</span></td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(m.total_contributed or 0) }}</td>

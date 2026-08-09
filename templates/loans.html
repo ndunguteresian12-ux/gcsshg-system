@@ -23,12 +23,12 @@
 {% endif %}
 
 <div class="stat-grid">
-  <div class="stat-card">
+  <div class="stat-card solid-teal">
     <div class="stat-stamp">Σ</div>
     <div class="stat-label">Total loans issued</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_issued) }}</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card solid-red">
     <div class="stat-stamp">L</div>
     <div class="stat-label">Outstanding</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_outstanding) }}</div>

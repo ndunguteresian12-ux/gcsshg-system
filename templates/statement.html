@@ -8,6 +8,13 @@
 {% endblock %}
 {% block content %}
 
+{% if role == 'member' %}
+<div class="greeting-banner">
+  <h1>{{ greeting }}, {{ member.full_name.split(' ')[0] }} &#128075;</h1>
+  <p>Welcome to your GCSSHG statement</p>
+</div>
+{% endif %}
+
 <div class="card">
   <h1 style="font-size:1.3rem; margin:0;">{{ member.full_name }}</h1>
   <div class="muted">Member since {{ member.join_date }}</div>
@@ -15,15 +22,15 @@
 </div>
 
 <div class="stat-grid">
-  <div class="stat-card">
+  <div class="stat-card solid-forest">
     <div class="stat-stamp">Σ</div>
     <div class="stat-label">Your total contributed</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total) }}</div>
   </div>
-  <div class="stat-card">
+  <div class="stat-card solid-gold">
     <div class="stat-stamp">G</div>
     <div class="stat-label">Group's total contributions</div>
-    <div class="stat-value figure gold">{{ "{:,.0f}".format(group_total_contributions) }}</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(group_total_contributions) }}</div>
   </div>
 </div>
 
