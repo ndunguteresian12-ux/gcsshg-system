@@ -27,6 +27,15 @@
 </div>
 
 <div class="card">
+  <h2>Your contribution growth</h2>
+  {% if contributions %}
+  <div class="chart-wrap"><canvas id="ownChart"></canvas></div>
+  {% else %}
+  <p class="muted">No contributions recorded yet.</p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Contribution history</h2>
   {% if contributions %}
   <table>
@@ -109,5 +118,32 @@
   <p class="muted">No dividend payouts recorded yet.</p>
   {% endif %}
 </div>
+
+<script>
+(function() {
+  const data = {{ own_chart_json|safe }};
+  if (data.labels.length) {
+    new Chart(document.getElementById('ownChart'), {
+      type: 'line',
+      data: {
+        labels: data.labels,
+        datasets: [{
+          label: 'Contribution', data: data.data,
+          borderColor: '#1F4D3D', backgroundColor: 'rgba(31,77,61,0.12)',
+          fill: true, tension: 0.25, pointBackgroundColor: '#C08829', pointRadius: 4,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { beginAtZero: true, ticks: { color: '#6B7A72' }, grid: { color: '#E1E4DE' } },
+          x: { ticks: { color: '#6B7A72' }, grid: { display: false } }
+        }
+      }
+    });
+  }
+})();
+</script>
 
 {% endblock %}

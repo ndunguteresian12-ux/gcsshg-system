@@ -14,6 +14,7 @@ This is an MVP scaffold covering the core workflow:
 """
 
 import os
+import json
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
@@ -506,6 +507,78 @@ def dividends_page(request: Request, session_data=Depends(get_session_optional))
     })
 
 
+@app.get("/dividends/record-historical", response_class=HTMLResponse)
+def record_historical_dividend_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.id, m.full_name, COALESCE(SUM(c.amount),0) as total_contributed
+                   FROM members m LEFT JOIN contributions c ON c.member_id = m.id
+                   WHERE m.status = 'active' GROUP BY m.id ORDER BY m.full_name"""
+            )
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_historical.html", {
+        "members": members, "role": session_data["role"],
+    })
+
+
+@app.post("/dividends/record-historical")
+async def record_historical_dividend_submit(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+do+this", status_code=303)
+    form = await request.form()
+    fiscal_year_label = form.get("fiscal_year_label", "").strip()
+    if not fiscal_year_label:
+        return RedirectResponse(url="/dividends/record-historical?error=Label+is+required", status_code=303)
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            total_pool = Decimal("0")
+            member_amounts = []
+            for key, value in form.multi_items():
+                if key.startswith("amount_") and value.strip():
+                    member_id = int(key.replace("amount_", ""))
+                    amount = Decimal(value)
+                    if amount > 0:
+                        member_amounts.append((member_id, amount))
+                        total_pool += amount
+
+            if not member_amounts:
+                return RedirectResponse(
+                    url="/dividends/record-historical?error=Enter+at+least+one+member's+amount", status_code=303
+                )
+
+            cur.execute(
+                """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
+                                               total_weighted_contributions, computed_by, notes)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                (fiscal_year_label, total_pool, 0, session_data["user_id"],
+                 "Historical payout - entered manually, pre-dates this system"),
+            )
+            run_id = cur.fetchone()["id"]
+
+            for member_id, amount in member_amounts:
+                cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
+                            (member_id,))
+                total_contribution = cur.fetchone()["total"]
+                cur.execute(
+                    """INSERT INTO dividends (dividend_run_id, member_id, total_contribution,
+                                               weighted_contribution, dividend_amount)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (run_id, member_id, total_contribution, 0, amount),
+                )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/dividends/{run_id}", status_code=303)
+
+
 @app.post("/dividends/preview")
 def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
                        total_interest_pool: float = Form(...),
@@ -746,9 +819,24 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
             active_loans = cur.fetchall()
             total_loans_outstanding = Decimal("0")
+            overdue_count = 0
             for loan in active_loans:
                 detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
                 total_loans_outstanding += detail["current_balance"]
+                if detail["is_overdue"]:
+                    overdue_count += 1
+            active_ontime_count = len(active_loans) - overdue_count
+
+            cur.execute("SELECT COUNT(*) as count FROM loans WHERE status = 'cleared'")
+            cleared_count = cur.fetchone()["count"]
+
+            cur.execute(
+                "SELECT contribution_month, SUM(amount) as total FROM contributions "
+                "GROUP BY contribution_month ORDER BY contribution_month"
+            )
+            monthly_rows = cur.fetchall()
+            monthly_labels = [r["contribution_month"].strftime("%b %Y") for r in monthly_rows]
+            monthly_totals = [float(r["total"]) for r in monthly_rows]
     finally:
         conn.close()
     return templates.TemplateResponse(request, "dashboard.html", {
@@ -759,6 +847,10 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         "total_loans_issued": total_loans_issued,
         "total_interest_earned": total_interest_earned,
         "total_dividends_paid": total_dividends_paid,
+        "monthly_labels": monthly_labels, "monthly_totals": monthly_totals,
+        "loan_status_counts": [active_ontime_count, overdue_count, cleared_count],
+        "monthly_chart_json": json.dumps({"labels": monthly_labels, "data": monthly_totals}),
+        "loan_status_json": json.dumps([active_ontime_count, overdue_count, cleared_count]),
     })
 
 
@@ -1345,10 +1437,16 @@ def statement_page(request: Request, member_id: Optional[int] = None,
     finally:
         conn.close()
 
+    own_chart_json = json.dumps({
+        "labels": [c["contribution_month"].strftime("%b %Y") for c in contributions],
+        "data": [float(c["amount"]) for c in contributions],
+    })
+
     return templates.TemplateResponse(request, "statement.html", {
         "member": member, "contributions": contributions,
         "total": total, "loans": loan_details, "dividends": dividends,
         "penalties": penalties, "penalties_owed": penalties_owed,
         "group_total_contributions": group_total_contributions,
+        "own_chart_json": own_chart_json,
         "role": session_data["role"],
     })
