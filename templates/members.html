@@ -32,7 +32,17 @@
     <tr>
       <td>{{ m.full_name }}</td>
       <td>
-        {% if m.officer_role == 'chairperson' %}<span class="role-badge role-chairperson">Chairperson</span>
+        {% if role == 'chairperson' and m.user_id %}
+        <form method="post" action="/members/{{ m.id }}/set-role" style="display:flex; gap:0.3rem; margin:0;">
+          <select name="new_role" style="width:auto; padding:0.3rem; font-size:0.78rem;">
+            <option value="member" {% if not m.officer_role or m.officer_role == 'member' %}selected{% endif %}>Member</option>
+            <option value="chairperson" {% if m.officer_role == 'chairperson' %}selected{% endif %}>Chairperson</option>
+            <option value="treasurer" {% if m.officer_role == 'treasurer' %}selected{% endif %}>Treasurer</option>
+            <option value="secretary" {% if m.officer_role == 'secretary' %}selected{% endif %}>Secretary</option>
+          </select>
+          <button type="submit" class="btn-secondary" style="margin:0; padding:0.3rem 0.5rem; font-size:0.72rem; width:auto;">Set</button>
+        </form>
+        {% elif m.officer_role == 'chairperson' %}<span class="role-badge role-chairperson">Chairperson</span>
         {% elif m.officer_role == 'treasurer' %}<span class="role-badge role-treasurer">Treasurer</span>
         {% elif m.officer_role == 'secretary' %}<span class="role-badge role-secretary">Secretary</span>
         {% else %}<span class="muted">Member</span>{% endif %}

@@ -1081,6 +1081,29 @@ def edit_member_submit(member_id: int, full_name: str = Form(...), phone: str = 
     return RedirectResponse(url="/members", status_code=303)
 
 
+@app.post("/members/{member_id}/set-role")
+def set_member_role(member_id: int, new_role: str = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+assign+leadership+roles", status_code=303)
+    if new_role not in ("chairperson", "treasurer", "secretary", "member"):
+        return RedirectResponse(url="/members?error=Invalid+role", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id, full_name FROM members WHERE id = %s", (member_id,))
+            row = cur.fetchone()
+            if not row or not row["user_id"]:
+                return RedirectResponse(
+                    url="/members?error=This+member+needs+a+login+created+first+before+assigning+a+role",
+                    status_code=303,
+                )
+            cur.execute("UPDATE users SET role = %s WHERE id = %s", (new_role, row["user_id"]))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/members", status_code=303)
+
+
 @app.get("/loans", response_class=HTMLResponse)
 def loans_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data:

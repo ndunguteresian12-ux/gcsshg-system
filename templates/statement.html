@@ -8,6 +8,8 @@
 {% endblock %}
 {% block content %}
 
+{% include "_letterhead.html" %}
+
 {% if role == 'member' %}
 <div class="greeting-banner">
   <h1>{{ greeting }}, {{ member.full_name.split(' ')[0] }} &#128075;</h1>

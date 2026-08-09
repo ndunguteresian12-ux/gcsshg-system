@@ -244,6 +244,15 @@
     .chart-grid { grid-template-columns: 1.4fr 1fr; }
   }
 
+  .letterhead {
+    display: flex; align-items: center; gap: 0.9rem;
+    padding-bottom: 0.9rem; margin-bottom: 1.1rem;
+    border-bottom: 2px solid var(--forest);
+  }
+  .letterhead-logo { width: 56px; height: 56px; flex-shrink: 0; }
+  .letterhead-title { font-family: 'Fraunces', serif; font-weight: 700; font-size: 1.05rem; color: var(--forest-dark); }
+  .letterhead-sub { font-size: 0.78rem; color: var(--muted); margin-top: 0.15rem; }
+
   @media print {
     header.topbar, nav, .no-print, form, button:not(.keep-print) { display: none !important; }
     body { background: white; }
