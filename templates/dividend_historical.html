@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Record historical dividend{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dividends">&larr; Dividends</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2 style="margin:0;">Record a historical dividend payout</h2>
+  <p class="muted">
+    For dividends already paid before this system existed - enter the exact amount each member
+    received, from your paper records. This does not recalculate anything; it just saves what
+    actually happened so it shows up in everyone's statement.
+  </p>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/dividends/record-historical">
+    <label for="fiscal_year_label">Label</label>
+    <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. 2024 payout (pre-system)" required>
+
+    <h2 style="font-size:0.95rem; margin-top:1.2rem;">Amount per member (KES)</h2>
+    <table>
+      <tr><th>Member</th><th class="figure-head">Amount</th></tr>
+      {% for m in members %}
+      <tr>
+        <td>{{ m.full_name }}</td>
+        <td>
+          <input type="number" name="amount_{{ m.id }}" step="0.01" min="0" placeholder="0"
+                 style="text-align:right; padding:0.35rem;">
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+
+    <button type="submit">Save historical dividend run</button>
+  </form>
+</div>
+
+{% endblock %}
