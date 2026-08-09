@@ -60,6 +60,41 @@ def get_settings(cur):
     return cur.fetchone()
 
 
+def compute_contribution_standing(cur, member_id, join_date, min_contribution, as_of):
+    """
+    Single source of truth for the cumulative contribution check - used by
+    BOTH the penalty engine and the member statement page, so they can
+    never disagree with each other.
+    Returns months elapsed since joining (not counting the current
+    in-progress month), what should have been contributed by now, what
+    actually has been, and the shortfall (0 if caught up or ahead).
+    """
+    join_month = join_date.replace(day=1)
+    current_month_start = as_of.replace(day=1)
+    months_elapsed = 0
+    cursor_month = join_month
+    while cursor_month < current_month_start:
+        months_elapsed += 1
+        cursor_month = add_months(cursor_month, 1)
+
+    expected_cumulative = min_contribution * months_elapsed
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
+        (member_id,),
+    )
+    actual_cumulative = cur.fetchone()["total"]
+    shortfall = max(expected_cumulative - actual_cumulative, Decimal("0"))
+    is_current = actual_cumulative >= expected_cumulative
+
+    return {
+        "months_elapsed": months_elapsed,
+        "expected_cumulative": expected_cumulative,
+        "actual_cumulative": actual_cumulative,
+        "shortfall": shortfall,
+        "is_current": is_current,
+    }
+
+
 def time_greeting():
     """Simple time-of-day greeting, adjusted for East Africa Time (UTC+3)."""
     hour = (datetime.utcnow().hour + 3) % 24
@@ -1480,27 +1515,11 @@ def run_penalty_check(session_data=Depends(get_session_optional)):
             current_month_start = today.replace(day=1)
             min_contribution = settings["min_monthly_contribution"]
             for m in members:
-                join_month = m["join_date"].replace(day=1)
-                months_elapsed = 0
-                cursor_month = join_month
-                while cursor_month < current_month_start:
-                    months_elapsed += 1
-                    cursor_month = add_months(cursor_month, 1)
-                if months_elapsed <= 0:
-                    continue
-
-                expected_cumulative = min_contribution * months_elapsed
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
-                    (m["id"],),
-                )
-                actual_cumulative = cur.fetchone()["total"]
-
-                if actual_cumulative >= expected_cumulative:
+                standing = compute_contribution_standing(cur, m["id"], m["join_date"], min_contribution, today)
+                if standing["is_current"]:
                     continue  # caught up overall - no penalty, regardless of which months were light
 
-                shortfall = expected_cumulative - actual_cumulative
-                shortfall_months = math.ceil(shortfall / min_contribution)
+                shortfall_months = math.ceil(standing["shortfall"] / min_contribution)
 
                 cur.execute(
                     "SELECT COUNT(*) as count FROM penalties WHERE member_id = %s AND penalty_type = 'missed_contribution'",
@@ -1777,6 +1796,10 @@ def statement_page(request: Request, member_id: Optional[int] = None,
 
             cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
             group_total_contributions = cur.fetchone()["total"]
+
+            standing = compute_contribution_standing(
+                cur, mid, member["join_date"], settings["min_monthly_contribution"], date.today()
+            )
     finally:
         conn.close()
 
@@ -1791,5 +1814,6 @@ def statement_page(request: Request, member_id: Optional[int] = None,
         "penalties": penalties, "penalties_owed": penalties_owed,
         "group_total_contributions": group_total_contributions,
         "own_chart_json": own_chart_json, "greeting": time_greeting(),
+        "standing": standing, "min_contribution": settings["min_monthly_contribution"],
         "role": session_data["role"],
     })

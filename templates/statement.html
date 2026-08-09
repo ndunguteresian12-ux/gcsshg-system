@@ -92,6 +92,25 @@
 </div>
 
 <div class="card">
+  <h2>Your contribution standing</h2>
+  <p class="muted">
+    {{ standing.months_elapsed }} month{{ 's' if standing.months_elapsed != 1 else '' }} elapsed since you joined
+    (not counting the current month in progress) &times; the KES {{ "{:,.0f}".format(min_contribution) }} minimum
+    = <strong class="figure">KES {{ "{:,.0f}".format(standing.expected_cumulative) }}</strong> expected by now.
+  </p>
+  <p class="muted">You've contributed <strong class="figure">KES {{ "{:,.0f}".format(standing.actual_cumulative) }}</strong> in total.</p>
+  {% if standing.is_current %}
+  <p style="color: var(--forest-dark); font-weight:600; margin-top:0.6rem;">
+    &#9989; You're caught up - thank you for your timely contributions!
+  </p>
+  {% else %}
+  <p style="color: var(--red); font-weight:600; margin-top:0.6rem;">
+    You're behind by KES {{ "{:,.0f}".format(standing.shortfall) }}. This is why penalties may appear below.
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Your penalties</h2>
   {% if penalties %}
   <p class="muted">Total outstanding: <strong class="figure" style="color: var(--red);">KES {{ "{:,.0f}".format(penalties_owed) }}</strong></p>
