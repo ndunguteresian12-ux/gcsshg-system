@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Contributions report - {{ period_label }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/reports">&larr; Reports</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2 style="margin:0;">Contributions - {{ period_label }}</h2>
+  <p class="muted">Githiga Comprehensive School Self Help Group</p>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="stat-grid" style="grid-template-columns: 1fr;">
+  <div class="stat-card">
+    <div class="stat-label">Total</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <tr><th>Member</th><th class="figure-head">Amount</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% endblock %}

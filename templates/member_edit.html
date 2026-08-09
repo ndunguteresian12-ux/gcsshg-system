@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Edit member{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/members">&larr; Members</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Edit member</h2>
+</div>
+
+<div class="card">
+  <form method="post" action="/members/{{ member.id }}/edit">
+    <label for="full_name">Full name</label>
+    <input type="text" id="full_name" name="full_name" value="{{ member.full_name }}" required>
+
+    <label for="phone">Phone</label>
+    <input type="text" id="phone" name="phone" value="{{ member.phone or '' }}" placeholder="0712345678">
+
+    <label for="join_date_field">Join date</label>
+    <input type="date" id="join_date_field" name="join_date_field" value="{{ member.join_date }}" required>
+
+    <button type="submit">Save changes</button>
+  </form>
+</div>
+
+{% endblock %}

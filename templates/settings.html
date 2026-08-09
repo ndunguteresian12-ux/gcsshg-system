@@ -3,6 +3,7 @@
 {% block header_right %}
 <nav>
   <a href="/dashboard">Overview</a>
+  <a href="/officers">Leadership</a>
   <a href="/loans">Loans</a>
   <a href="/logout">Log out</a>
 </nav>
@@ -46,6 +47,23 @@
     <h2 style="font-size:0.95rem; margin-top:1.4rem;">Penalties</h2>
     <label for="penalty_amount">Penalty amount (KES, charged per overdue month or missed contribution)</label>
     <input type="number" id="penalty_amount" name="penalty_amount" step="1" min="0" value="{{ settings.penalty_amount }}" required>
+
+    <h2 style="font-size:0.95rem; margin-top:1.4rem;">Dividend allocation</h2>
+    <p class="muted" style="margin-top:-0.3rem;">
+      When you run a dividend payout, the total interest pool is split three ways: a cut for
+      administration, a cut for transaction costs, and the remainder paid out to members.
+    </p>
+    <label for="dividend_admin_percent">Administration (%)</label>
+    <input type="number" id="dividend_admin_percent" name="dividend_admin_percent" step="0.1" min="0" max="100"
+           value="{{ settings.dividend_admin_percent }}" required>
+
+    <label for="dividend_transaction_percent">Transaction costs (%)</label>
+    <input type="number" id="dividend_transaction_percent" name="dividend_transaction_percent" step="0.1" min="0" max="100"
+           value="{{ settings.dividend_transaction_percent }}" required>
+
+    <p class="muted">
+      Remainder to members: <strong>{{ "%.1f"|format(100 - settings.dividend_admin_percent - settings.dividend_transaction_percent) }}%</strong>
+    </p>
 
     <button type="submit">Save settings</button>
   </form>

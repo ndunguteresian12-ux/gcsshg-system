@@ -192,6 +192,15 @@
   @media (min-width: 640px) {
     .chart-grid { grid-template-columns: 1.4fr 1fr; }
   }
+
+  @media print {
+    header.topbar, nav, .no-print, form, button:not(.keep-print) { display: none !important; }
+    body { background: white; }
+    main { max-width: 100%; padding: 0; }
+    .card { border: 1px solid #ccc; border-left: 1px solid #ccc; box-shadow: none; break-inside: avoid; }
+    a { text-decoration: none; color: inherit; }
+    .stat-stamp { display: none; }
+  }
 </style>
 </head>
 <body>

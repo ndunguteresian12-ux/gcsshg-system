@@ -443,13 +443,16 @@ def compute_dividend_records(cur):
     return records
 
 
-def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results):
+def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results,
+                       gross_pool=None, admin_amount=Decimal("0"), transaction_cost_amount=Decimal("0")):
     total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
     cur.execute(
         """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
-                                       total_weighted_contributions, computed_by)
-           VALUES (%s, %s, %s, %s) RETURNING id""",
-        (fiscal_year_label, total_interest_pool, total_weighted, computed_by),
+                                       total_weighted_contributions, computed_by,
+                                       gross_pool, admin_amount, transaction_cost_amount)
+           VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+        (fiscal_year_label, total_interest_pool, total_weighted, computed_by,
+         gross_pool, admin_amount, transaction_cost_amount),
     )
     run_id = cur.fetchone()["id"]
     for r in results:
@@ -589,9 +592,13 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+            gross = Decimal(str(total_interest_pool))
+            admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
+            transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
+            member_pool = gross - admin_amount - transaction_amount
             records = compute_dividend_records(cur)
             results = run_dividends(
-                records, Decimal(str(total_interest_pool)),
+                records, member_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
             )
     finally:
@@ -600,6 +607,10 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
     return templates.TemplateResponse(request, "dividend_preview.html", {
         "results": results_sorted, "fiscal_year_label": fiscal_year_label,
         "total_interest_pool": total_interest_pool, "role": session_data["role"],
+        "gross_pool": gross, "admin_amount": admin_amount,
+        "transaction_amount": transaction_amount, "member_pool": member_pool,
+        "admin_percent": settings["dividend_admin_percent"],
+        "transaction_percent": settings["dividend_transaction_percent"],
     })
 
 
@@ -612,13 +623,19 @@ def dividends_confirm(fiscal_year_label: str = Form(...), total_interest_pool: f
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+            gross = Decimal(str(total_interest_pool))
+            admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
+            transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
+            member_pool = gross - admin_amount - transaction_amount
             records = compute_dividend_records(cur)
             results = run_dividends(
-                records, Decimal(str(total_interest_pool)),
+                records, member_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
             )
-            run_id = save_dividend_run(cur, fiscal_year_label, Decimal(str(total_interest_pool)),
-                                        session_data["user_id"], results)
+            run_id = save_dividend_run(cur, fiscal_year_label, member_pool,
+                                        session_data["user_id"], results,
+                                        gross_pool=gross, admin_amount=admin_amount,
+                                        transaction_cost_amount=transaction_amount)
             conn.commit()
     finally:
         conn.close()
@@ -685,6 +702,79 @@ def bank_balance_update(amount: float = Form(...), note: str = Form(""),
     finally:
         conn.close()
     return RedirectResponse(url="/bank-balance", status_code=303)
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    return templates.TemplateResponse(request, "reports.html", {"role": session_data["role"]})
+
+
+@app.get("/reports/contributions", response_class=HTMLResponse)
+def contributions_report(request: Request, month: Optional[str] = None, year: Optional[int] = None,
+                          session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if month:
+                month_date = f"{month}-01"
+                cur.execute(
+                    """SELECT m.full_name, COALESCE(c.amount, 0) as amount
+                       FROM members m LEFT JOIN contributions c
+                         ON c.member_id = m.id AND c.contribution_month = %s
+                       WHERE m.status = 'active' ORDER BY m.full_name""",
+                    (month_date,),
+                )
+                rows = cur.fetchall()
+                period_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+            elif year:
+                cur.execute(
+                    """SELECT m.full_name, COALESCE(SUM(c.amount), 0) as amount
+                       FROM members m LEFT JOIN contributions c
+                         ON c.member_id = m.id AND EXTRACT(YEAR FROM c.contribution_month) = %s
+                       WHERE m.status = 'active' GROUP BY m.full_name ORDER BY m.full_name""",
+                    (year,),
+                )
+                rows = cur.fetchall()
+                period_label = str(year)
+            else:
+                return RedirectResponse(url="/reports?error=Pick+a+month+or+year", status_code=303)
+            total = sum((r["amount"] for r in rows), Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "report_contributions.html", {
+        "rows": rows, "total": total, "period_label": period_label, "role": session_data["role"],
+    })
+
+
+@app.get("/reports/loans", response_class=HTMLResponse)
+def loans_report(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            cur.execute(
+                """SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id
+                   ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
+            )
+            loans = cur.fetchall()
+            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
+            total_interest = sum(
+                (l["current_balance"] - l["principal"] + l["amount_repaid"] for l in loan_rows), Decimal("0")
+            )
+            total_outstanding = sum((l["current_balance"] for l in loan_rows if l["status"] == "active"), Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "report_loans.html", {
+        "loans": loan_rows, "total_principal": total_principal, "total_interest": total_interest,
+        "total_outstanding": total_outstanding, "role": session_data["role"],
+    })
 
 
 @app.get("/health")
@@ -793,7 +883,11 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, full_name FROM members ORDER BY full_name")
+            cur.execute("SELECT id FROM members WHERE user_id = %s", (session_data["user_id"],))
+            own = cur.fetchone()
+            own_member_id = own["id"] if own else None
+
+            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name")
             members = cur.fetchall()
 
             cur.execute("SELECT COUNT(*) as count FROM members")
@@ -840,7 +934,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
     finally:
         conn.close()
     return templates.TemplateResponse(request, "dashboard.html", {
-        "members": members, "role": session_data["role"],
+        "members": members, "role": session_data["role"], "own_member_id": own_member_id,
         "member_count": member_count,
         "total_contributions": total_contributions,
         "total_loans_outstanding": total_loans_outstanding,
@@ -867,6 +961,7 @@ def members_page(request: Request, session_data=Depends(get_session_optional)):
                 """SELECT m.*, COALESCE(SUM(c.amount), 0) as total_contributed
                    FROM members m
                    LEFT JOIN contributions c ON c.member_id = m.id
+                   WHERE m.status = 'active'
                    GROUP BY m.id ORDER BY m.full_name"""
             )
             members = cur.fetchall()
@@ -875,6 +970,98 @@ def members_page(request: Request, session_data=Depends(get_session_optional)):
     return templates.TemplateResponse(request, "members.html", {
         "members": members, "role": session_data["role"],
     })
+
+
+@app.get("/members/archived", response_class=HTMLResponse)
+def archived_members_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+view+archived+members", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT m.*, COALESCE(SUM(c.amount), 0) as total_contributed
+                   FROM members m
+                   LEFT JOIN contributions c ON c.member_id = m.id
+                   WHERE m.status != 'active'
+                   GROUP BY m.id ORDER BY m.full_name"""
+            )
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "members_archived.html", {
+        "members": members, "role": session_data["role"],
+    })
+
+
+@app.post("/members/{member_id}/archive")
+def archive_member(member_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+remove+members", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id FROM members WHERE id = %s", (member_id,))
+            row = cur.fetchone()
+            cur.execute("UPDATE members SET status = 'exited' WHERE id = %s", (member_id,))
+            if row and row["user_id"]:
+                cur.execute("UPDATE users SET is_active = FALSE WHERE id = %s", (row["user_id"],))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/members", status_code=303)
+
+
+@app.post("/members/{member_id}/restore")
+def restore_member(member_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members/archived?error=Only+the+chairperson+can+restore+members", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id FROM members WHERE id = %s", (member_id,))
+            row = cur.fetchone()
+            cur.execute("UPDATE members SET status = 'active' WHERE id = %s", (member_id,))
+            if row and row["user_id"]:
+                cur.execute("UPDATE users SET is_active = TRUE WHERE id = %s", (row["user_id"],))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/members/archived", status_code=303)
+
+
+@app.get("/members/{member_id}/edit", response_class=HTMLResponse)
+def edit_member_page(member_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+edit+members", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+            member = cur.fetchone()
+    finally:
+        conn.close()
+    if not member:
+        return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Member not found.</p>")
+    return templates.TemplateResponse(request, "member_edit.html", {"member": member, "role": session_data["role"]})
+
+
+@app.post("/members/{member_id}/edit")
+def edit_member_submit(member_id: int, full_name: str = Form(...), phone: str = Form(""),
+                        join_date_field: str = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+edit+members", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE members SET full_name = %s, phone = %s, join_date = %s WHERE id = %s",
+                (full_name, phone or None, date.fromisoformat(join_date_field), member_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/members", status_code=303)
 
 
 @app.get("/loans", response_class=HTMLResponse)
@@ -887,7 +1074,7 @@ def loans_page(request: Request, session_data=Depends(get_session_optional)):
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            cur.execute("SELECT id, full_name FROM members ORDER BY full_name")
+            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name")
             members = cur.fetchall()
 
             cur.execute(
@@ -1097,6 +1284,42 @@ def edit_loan(loan_id: int, principal: float = Form(...), issue_date_field: str 
     return RedirectResponse(url="/loans", status_code=303)
 
 
+@app.get("/officers", response_class=HTMLResponse)
+def officers_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+manage+leadership+roles", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM users WHERE role IN ('chairperson','treasurer','secretary') "
+                "ORDER BY role, full_name"
+            )
+            officers = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "officers.html", {
+        "officers": officers, "role": session_data["role"], "own_user_id": session_data["user_id"],
+    })
+
+
+@app.post("/officers/{user_id}/change-role")
+def change_officer_role(user_id: int, new_role: str = Form(...),
+                         session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+manage+leadership+roles", status_code=303)
+    if new_role not in ("chairperson", "treasurer", "secretary", "member"):
+        return RedirectResponse(url="/officers?error=Invalid+role", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET role = %s WHERE id = %s", (new_role, user_id))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/officers?error=Role+updated", status_code=303)
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
@@ -1120,10 +1343,16 @@ def settings_update(
     low_loan_deadline_months: int = Form(...),
     high_loan_deadline_months: int = Form(...),
     penalty_amount: float = Form(...),
+    dividend_admin_percent: float = Form(...),
+    dividend_transaction_percent: float = Form(...),
     session_data=Depends(get_session_optional),
 ):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+change+settings", status_code=303)
+    if dividend_admin_percent + dividend_transaction_percent > 100:
+        return RedirectResponse(
+            url="/settings?error=Admin+%2B+transaction+percentages+can't+exceed+100%25", status_code=303
+        )
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -1132,10 +1361,12 @@ def settings_update(
                    min_monthly_contribution = %s, low_loan_ceiling = %s, high_loan_ceiling = %s,
                    low_loan_interest_rate = %s, high_loan_interest_rate = %s,
                    low_loan_deadline_months = %s, high_loan_deadline_months = %s,
-                   penalty_amount = %s, updated_at = now()""",
+                   penalty_amount = %s, dividend_admin_percent = %s, dividend_transaction_percent = %s,
+                   updated_at = now()""",
                 (min_monthly_contribution, low_loan_ceiling, high_loan_ceiling,
                  low_loan_interest_rate, high_loan_interest_rate,
-                 low_loan_deadline_months, high_loan_deadline_months, penalty_amount),
+                 low_loan_deadline_months, high_loan_deadline_months, penalty_amount,
+                 dividend_admin_percent, dividend_transaction_percent),
             )
             conn.commit()
     finally:

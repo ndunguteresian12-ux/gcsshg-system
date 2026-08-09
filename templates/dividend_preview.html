@@ -10,7 +10,26 @@
 
 <div class="card">
   <h2 style="margin:0;">Preview: {{ fiscal_year_label }}</h2>
-  <p class="muted">Pool: KES {{ "{:,.2f}".format(total_interest_pool) }}. Nothing has been saved yet - review below, then confirm.</p>
+  <p class="muted">Nothing has been saved yet - review below, then confirm.</p>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Gross pool</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(gross_pool) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Admin ({{ admin_percent }}%)</div>
+    <div class="stat-value figure" style="color: var(--muted);">-{{ "{:,.0f}".format(admin_amount) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Transaction ({{ transaction_percent }}%)</div>
+    <div class="stat-value figure" style="color: var(--muted);">-{{ "{:,.0f}".format(transaction_amount) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">To members</div>
+    <div class="stat-value figure gold">{{ "{:,.0f}".format(member_pool) }}</div>
+  </div>
 </div>
 
 <div class="card">

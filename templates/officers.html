@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Leadership roles - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/settings">Settings</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Leadership roles</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <p class="muted">Change who holds each officer role. Setting someone to "member" removes their officer
+    access but doesn't delete their account - they can still log in and see their own statement if linked
+    to a member record.</p>
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Current role</th><th></th></tr>
+    {% for o in officers %}
+    <tr>
+      <td>{{ o.full_name }}</td>
+      <td>{{ o.phone }}</td>
+      <td><strong>{{ o.role }}</strong></td>
+      <td>
+        <form method="post" action="/officers/{{ o.id }}/change-role" style="display:flex; gap:0.4rem; margin:0;"
+              {% if o.id == own_user_id %}onsubmit="return confirm('This is your own account. If you change your role away from chairperson, you will lose chairperson access immediately. Continue?');"{% endif %}>
+          <select name="new_role" style="width:auto; padding:0.35rem;">
+            <option value="chairperson" {% if o.role == 'chairperson' %}selected{% endif %}>Chairperson</option>
+            <option value="treasurer" {% if o.role == 'treasurer' %}selected{% endif %}>Treasurer</option>
+            <option value="secretary" {% if o.role == 'secretary' %}selected{% endif %}>Secretary</option>
+            <option value="member">Member (remove officer access)</option>
+          </select>
+          <button type="submit" class="btn-secondary" style="margin:0; padding:0.3rem 0.6rem; font-size:0.78rem; width:auto;">Update</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <p class="muted">To appoint a brand-new officer who doesn't have a login yet, use the
+  <code>create_officer.py</code> script to create their account, then come back here if you need to
+  adjust their role later.</p>
+</div>
+
+{% endblock %}

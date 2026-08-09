@@ -31,7 +31,7 @@
     <label for="fiscal_year_label">Fiscal year label</label>
     <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. Mar 2025 - Jan 2026" required>
 
-    <label for="total_interest_pool">Total interest pool to distribute (KES)</label>
+    <label for="total_interest_pool">Total interest pool (gross, before admin/transaction cuts) (KES)</label>
     <input type="number" id="total_interest_pool" name="total_interest_pool" step="0.01" min="0"
            value="{{ '%.2f' % suggested_pool }}" required>
 

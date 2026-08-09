@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Reports - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Reports</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+<div class="card">
+  <h2>Monthly contributions</h2>
+  <p class="muted">See every member's contribution for a single month.</p>
+  <form method="get" action="/reports/contributions">
+    <label for="month">Month</label>
+    <input type="month" id="month" name="month" required>
+    <button type="submit">View report</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Yearly contributions</h2>
+  <p class="muted">See every member's total contribution across a full year.</p>
+  <form method="get" action="/reports/contributions">
+    <label for="year">Year</label>
+    <input type="number" id="year" name="year" min="2020" max="2100" placeholder="2026" required>
+    <button type="submit">View report</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>All loans &amp; interest</h2>
+  <p class="muted">Every loan issued, with interest charged, balance, and status.</p>
+  <a href="/reports/loans" class="btn btn-secondary">View report</a>
+</div>
+
+<div class="card">
+  <h2>Dividends</h2>
+  <p class="muted">Every dividend run, each with a printable per-member breakdown.</p>
+  <a href="/dividends" class="btn btn-secondary">Go to dividends</a>
+</div>
+
+<div class="card">
+  <h2>Individual member statement</h2>
+  <p class="muted">A single member's full contribution, loan, penalty, and dividend history - printable.</p>
+  <a href="/members" class="btn btn-secondary">Go to members</a>
+</div>
+
+{% endblock %}

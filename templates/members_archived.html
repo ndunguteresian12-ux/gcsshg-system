@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Archived members - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/members">&larr; Members</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Archived members</h2>
+</div>
+
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <p class="muted">Members who have left the group. Their full contribution, loan, and dividend
+    history is preserved for record-keeping - their login has been disabled, and they no longer
+    appear in active member lists.</p>
+  {% if members %}
+  <table>
+    <tr><th>Name</th><th>Status</th><th class="figure-head">Total contributed</th><th></th><th></th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.status }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(m.total_contributed or 0) }}</td>
+      <td><a class="row-link" href="/statement?member_id={{ m.id }}">View statement &rarr;</a></td>
+      <td>
+        <form method="post" action="/members/{{ m.id }}/restore" style="margin:0;">
+          <button type="submit" class="btn-secondary" style="margin:0; padding:0.3rem 0.6rem; font-size:0.78rem; width:auto;">Restore</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No archived members.</p>
+  {% endif %}
+</div>
+
+{% endblock %}
