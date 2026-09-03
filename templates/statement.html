@@ -65,7 +65,8 @@
   <table>
     <tr>
       <th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
-      <th class="figure-head">Interest</th><th>Rate</th><th class="figure-head">Balance</th><th>Status</th>
+      <th class="figure-head">Interest</th><th>Rate</th><th class="figure-head">Paid</th>
+      <th class="figure-head">Balance</th><th>Status</th>
     </tr>
     {% for l in loans %}
     <tr>
@@ -78,6 +79,7 @@
           {{ l.interest_rate }}% / {{ l.period_months }}mo
         </span>
       </td>
+      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
       <td>
         {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
@@ -85,6 +87,14 @@
       </td>
     </tr>
     {% endfor %}
+    <tr style="border-top: 2px solid var(--forest); font-weight: 600;">
+      <td colspan="2">Cumulative totals</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(loans|sum(attribute='principal')) }}</td>
+      <td></td><td></td>
+      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(loans|sum(attribute='amount_repaid')) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(loans|selectattr('status','equalto','active')|sum(attribute='current_balance')) }}</td>
+      <td></td>
+    </tr>
   </table>
   {% else %}
   <p class="muted">No loans on record.</p>

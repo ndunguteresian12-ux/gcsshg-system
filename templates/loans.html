@@ -21,12 +21,20 @@
 {% if request.query_params.get('error') %}
 <div class="error">{{ request.query_params.get('error') }}</div>
 {% endif %}
+{% if request.query_params.get('success') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('success') }}</div>
+{% endif %}
 
 <div class="stat-grid">
   <div class="stat-card solid-teal">
     <div class="stat-stamp">Σ</div>
     <div class="stat-label">Total loans issued</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_issued) }}</div>
+  </div>
+  <div class="stat-card solid-forest">
+    <div class="stat-stamp">P</div>
+    <div class="stat-label">Total paid</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_repaid) }}</div>
   </div>
   <div class="stat-card solid-red">
     <div class="stat-stamp">L</div>
@@ -52,7 +60,8 @@
   <table>
     <tr>
       <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
-      <th>Rate</th><th class="figure-head">Balance</th><th class="figure-head">Penalty</th><th>Status</th><th></th>
+      <th>Rate</th><th class="figure-head">Paid</th><th class="figure-head">Balance</th>
+      <th class="figure-head">Penalty</th><th>Status</th><th></th>
     </tr>
     {% for l in loans %}
     <tr>
@@ -68,6 +77,7 @@
         <span class="badge" style="background:#eee; color:#555;" title="Interest fixed at {{ l.interest_override_periods }} period(s), not date-calculated">fixed</span>
         {% endif %}
       </td>
+      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
       <td class="figure" style="text-align:right;">
         {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.penalty_due) }}</span>{% else %}-{% endif %}
@@ -86,6 +96,14 @@
       </td>
     </tr>
     {% endfor %}
+    <tr style="border-top: 2px solid var(--forest); font-weight: 600;">
+      <td colspan="3">Cumulative totals</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_loans_issued) }}</td>
+      <td></td>
+      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(total_repaid) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_outstanding) }}</td>
+      <td></td><td></td><td></td>
+    </tr>
   </table>
   {% else %}
   <p class="muted">No loans issued yet.</p>
@@ -122,7 +140,7 @@
   {% endif %}
 </div>
 
-<div class="card">
+<div class="card" id="issue-loan-form">
   <h2>Issue a new loan</h2>
   {% if role in ['chairperson', 'treasurer'] %}
   <p class="muted">

@@ -1168,13 +1168,15 @@ def loans_page(request: Request, session_data=Depends(get_session_optional)):
             loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
 
             total_loans_issued = sum((Decimal(l["principal"]) for l in loans), Decimal("0"))
+            total_repaid = sum((l["amount_repaid"] for l in loan_rows), Decimal("0"))
             total_outstanding = sum((l["current_balance"] for l in loan_rows if l["status"] == "active"), Decimal("0"))
             overdue_count = sum(1 for l in loan_rows if l["is_overdue"])
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loans.html", {
         "members": members, "loans": loan_rows, "role": session_data["role"],
-        "total_loans_issued": total_loans_issued, "total_outstanding": total_outstanding,
+        "total_loans_issued": total_loans_issued, "total_repaid": total_repaid,
+        "total_outstanding": total_outstanding,
         "overdue_count": overdue_count, "high_loan_ceiling": settings["high_loan_ceiling"],
     })
 
@@ -1245,7 +1247,7 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url="/loans", status_code=303)
+    return RedirectResponse(url="/loans?success=Loan+issued+-+ready+for+the+next+one#issue-loan-form", status_code=303)
 
 
 @app.post("/dashboard/repay-loan")
