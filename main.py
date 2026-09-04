@@ -26,7 +26,7 @@ load_dotenv()  # reads .env in this folder so DATABASE_URL/SESSION_SECRET don't 
 import psycopg2
 import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Depends, Cookie, Response, Request, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -48,6 +48,20 @@ signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 app = FastAPI(title="GCSSHG Management System")
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/sw.js")
+def service_worker():
+    # Served from root (not /static/) so its default scope covers the
+    # whole site - a service worker's max scope is the directory it's
+    # served from, and browsers require a special header to widen that,
+    # so serving it here avoids needing that entirely.
+    return FileResponse("static/sw.js", media_type="application/javascript")
+
+
+@app.get("/manifest.json")
+def manifest():
+    return FileResponse("static/manifest.json", media_type="application/manifest+json")
 
 
 def get_conn():
