@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Issue a loan - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans">&larr; Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Issue a new loan</h2>
+</div>
+
+{% if request.query_params.get('success') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('success') }}</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <p class="muted">
+    Under KES 20,000: 10% per month, due within 1 month.<br>
+    KES 20,000-{{ "{:,.0f}".format(high_loan_ceiling) }}: flat 10% total, 3 monthly installments.<br>
+    Loans above {{ "{:,.0f}".format(high_loan_ceiling) }} still use the same 3-month terms but exceed the normal ceiling - a flag will show on the loan.
+  </p>
+  <form method="post" action="/dashboard/issue-loan">
+    <label for="member_id">Member</label>
+    <select id="member_id" name="member_id" required autofocus>
+      {% for m in members %}
+      <option value="{{ m.id }}">{{ m.full_name }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="principal">Loan amount (KES)</label>
+    <input type="number" id="principal" name="principal" min="1" step="1" required>
+
+    <label for="issue_date_field">Issue date</label>
+    <input type="date" id="issue_date_field" name="issue_date_field" required>
+
+    <label for="interest_override_periods">
+      Legacy loan? Months of interest actually due (optional)
+    </label>
+    <input type="number" id="interest_override_periods" name="interest_override_periods" min="0" step="1"
+           placeholder="Leave blank for normal calculation">
+    <p class="muted" style="margin-top:0.3rem;">
+      For a loan issued before this system existed, fill this in so interest is fixed at exactly this
+      many periods instead of compounding from the issue date to today.
+    </p>
+
+    <button type="submit">Issue loan</button>
+  </form>
+</div>
+
+{% endblock %}

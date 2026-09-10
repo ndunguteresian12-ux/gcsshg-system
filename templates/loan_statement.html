@@ -10,6 +10,10 @@
 
 {% include "_letterhead.html" %}
 
+{% if request.query_params.get('success') %}
+<div class="error no-print" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('success') }}</div>
+{% endif %}
+
 <div class="card">
   <h1 style="font-size:1.3rem; margin:0;">{{ loan.full_name }}</h1>
   <div class="muted">Loan issued {{ loan.issue_date }} &middot; due {{ loan.due_date }}</div>

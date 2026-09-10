@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Repay loan - {{ loan.full_name }}{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans">&larr; Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Record a repayment</h2>
+</div>
+
+<div class="card">
+  <h1 style="font-size:1.2rem; margin:0;">{{ loan.full_name }}</h1>
+  <div class="muted">Issued {{ loan.issue_date }} &middot; due {{ loan.due_date }}</div>
+  <span class="badge {{ 'badge-low' if loan.interest_tier == 'low' else 'badge-high' }}" style="margin-top:0.5rem; display:inline-block;">
+    {{ loan.interest_rate }}% / {{ loan.period_months }}mo
+  </span>
+  {% if loan.is_overdue %}
+  <span style="color: var(--red); font-weight:600; margin-left:0.5rem;">Overdue</span>
+  {% endif %}
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Principal</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.principal) }}</div>
+  </div>
+  <div class="stat-card solid-forest">
+    <div class="stat-label">Paid so far</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.amount_repaid) }}</div>
+  </div>
+  <div class="stat-card solid-red">
+    <div class="stat-label">Balance due</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(loan.current_balance) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" action="/dashboard/repay-loan">
+    <input type="hidden" name="loan_id" value="{{ loan.id }}">
+
+    <label for="amount">Amount paid (KES)</label>
+    <input type="number" id="amount" name="amount" min="1" step="1" max="{{ loan.current_balance }}" required autofocus>
+
+    <label for="payment_date_field">Payment date</label>
+    <input type="date" id="payment_date_field" name="payment_date_field" required>
+
+    <button type="submit">Record repayment</button>
+  </form>
+</div>
+
+{% endblock %}

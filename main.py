@@ -1170,9 +1170,6 @@ def loans_page(request: Request, session_data=Depends(get_session_optional)):
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name")
-            members = cur.fetchall()
-
             cur.execute(
                 """SELECT l.*, m.full_name FROM loans l
                    JOIN members m ON m.id = l.member_id
@@ -1188,10 +1185,49 @@ def loans_page(request: Request, session_data=Depends(get_session_optional)):
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loans.html", {
-        "members": members, "loans": loan_rows, "role": session_data["role"],
+        "loans": loan_rows, "role": session_data["role"],
         "total_loans_issued": total_loans_issued, "total_repaid": total_repaid,
-        "total_outstanding": total_outstanding,
-        "overdue_count": overdue_count, "high_loan_ceiling": settings["high_loan_ceiling"],
+        "total_outstanding": total_outstanding, "overdue_count": overdue_count,
+    })
+
+
+@app.get("/loans/issue", response_class=HTMLResponse)
+def issue_loan_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+issue+loans", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name")
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "loan_issue.html", {
+        "members": members, "role": session_data["role"], "high_loan_ceiling": settings["high_loan_ceiling"],
+    })
+
+
+@app.get("/loans/{loan_id}/repay", response_class=HTMLResponse)
+def repay_loan_page(loan_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            cur.execute(
+                "SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id WHERE l.id = %s",
+                (loan_id,),
+            )
+            loan = cur.fetchone()
+            if not loan:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
+            detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "loan_repay.html", {
+        "loan": detail, "role": session_data["role"],
     })
 
 
@@ -1261,7 +1297,7 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url="/loans?success=Loan+issued+-+ready+for+the+next+one#issue-loan-form", status_code=303)
+    return RedirectResponse(url="/loans/issue?success=Loan+issued+-+ready+for+the+next+one", status_code=303)
 
 
 @app.post("/dashboard/repay-loan")
@@ -1311,7 +1347,7 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url="/loans", status_code=303)
+    return RedirectResponse(url=f"/loans/{loan_id}/statement?success=Repayment+recorded", status_code=303)
 
 
 @app.post("/loans/{loan_id}/delete")
