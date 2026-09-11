@@ -44,10 +44,15 @@
     <div class="stat-label">Loans outstanding</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_outstanding) }}</div>
   </div>
-  <div class="stat-card solid-gold" title="Total repaid minus total borrowed - can be negative while a lot of principal is still out on unpaid loans">
+  <div class="stat-card solid-gold" title="Total owed (principal + interest) minus total principal, across every loan - what the calculator says has accrued so far">
     <div class="stat-stamp">%</div>
-    <div class="stat-label">Interest earned</div>
-    <div class="stat-value figure">{{ "{:,.0f}".format(total_interest_earned) }}</div>
+    <div class="stat-label">Expected interest</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(expected_interest_total) }}</div>
+  </div>
+  <div class="stat-card" style="background:#2D6E8E; border:none;" title="Of loans with at least one repayment, cash received minus their original principal - loans never touched are excluded">
+    <div class="stat-stamp" style="border-color: rgba(255,255,255,0.6); color:white;">P</div>
+    <div class="stat-label" style="color: rgba(255,255,255,0.85);">Interest actually paid</div>
+    <div class="stat-value figure" style="color:white;">{{ "{:,.0f}".format(actual_interest_paid) }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-stamp">D</div>

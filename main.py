@@ -973,14 +973,41 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             cur.execute("SELECT COALESCE(SUM(principal),0) as total FROM loans")
             total_loans_issued = cur.fetchone()["total"]
 
-            cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM loan_repayments")
-            total_repaid_all = cur.fetchone()["total"]
+            # Two angles on interest, both computed per-loan using each loan's own
+            # stored terms (tier/rate/override), never re-derived from current settings:
+            #
+            # 1. Expected interest = what the interest calculator says has accrued
+            #    across every loan ever issued, as of today (or as of the date a
+            #    loan was cleared, so a settled loan doesn't keep "accruing" after
+            #    it was actually paid off). This is total owed (principal+interest)
+            #    minus total principal, i.e. purely the interest portion expected.
+            #
+            # 2. Actual (paid) interest = of the loans that have received at least
+            #    one repayment (even partial), how much has actually come back in
+            #    cash beyond their original principal. Untouched loans (zero
+            #    repayments) are excluded entirely rather than dragging this
+            #    figure negative by their full principal.
+            cur.execute("SELECT * FROM loans")
+            all_loans_full = cur.fetchall()
+            expected_interest_total = Decimal("0")
+            actual_repaid_touched = Decimal("0")
+            actual_principal_touched = Decimal("0")
+            for loan in all_loans_full:
+                terms = terms_from_loan_row(loan)
+                override = loan.get("interest_override_periods")
+                as_of = loan["cleared_date"] if (loan["status"] == "cleared" and loan["cleared_date"]) else date.today()
+                interest_due = loan_interest_due(loan["principal"], loan["issue_date"], as_of, terms, override)
+                expected_interest_total += interest_due
 
-            # Interest earned = total repaid - total borrowed (all loan principal ever
-            # issued). This can go negative while many loans remain unpaid - that's
-            # correct under this formula, not a bug: it means more principal is still
-            # out on loan than has come back in yet.
-            total_interest_earned = total_repaid_all - total_loans_issued
+                cur.execute(
+                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
+                    (loan["id"],),
+                )
+                repaid = cur.fetchone()["repaid"]
+                if repaid > 0:
+                    actual_repaid_touched += repaid
+                    actual_principal_touched += Decimal(loan["principal"])
+            actual_interest_paid = actual_repaid_touched - actual_principal_touched
 
             settings = get_settings(cur)
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
@@ -1013,7 +1040,8 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         "total_contributions": total_contributions,
         "total_loans_outstanding": total_loans_outstanding,
         "total_loans_issued": total_loans_issued,
-        "total_interest_earned": total_interest_earned,
+        "expected_interest_total": expected_interest_total,
+        "actual_interest_paid": actual_interest_paid,
         "total_dividends_paid": total_dividends_paid,
         "monthly_labels": monthly_labels, "monthly_totals": monthly_totals,
         "loan_status_counts": [active_ontime_count, overdue_count, cleared_count],
