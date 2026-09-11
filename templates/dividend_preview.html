@@ -9,7 +9,8 @@
 {% block content %}
 
 <div class="card">
-  <h2 style="margin:0;">Preview: {{ fiscal_year_label }}</h2>
+  <a href="/dividends" class="row-link">&larr; Back to Dividends</a>
+  <h2 style="margin:0.6rem 0 0;">Preview: {{ fiscal_year_label }}</h2>
   <p class="muted">Nothing has been saved yet - review below, then confirm.</p>
 </div>
 
@@ -19,11 +20,11 @@
     <div class="stat-value figure">{{ "{:,.0f}".format(gross_pool) }}</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Admin ({{ admin_percent }}%)</div>
+    <div class="stat-label">{{ admin_label }} ({{ admin_percent }}%)</div>
     <div class="stat-value figure" style="color: var(--muted);">-{{ "{:,.0f}".format(admin_amount) }}</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Transaction ({{ transaction_percent }}%)</div>
+    <div class="stat-label">{{ transaction_label }} ({{ transaction_percent }}%)</div>
     <div class="stat-value figure" style="color: var(--muted);">-{{ "{:,.0f}".format(transaction_amount) }}</div>
   </div>
   <div class="stat-card">

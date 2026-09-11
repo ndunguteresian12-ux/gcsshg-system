@@ -11,13 +11,14 @@
 {% include "_letterhead.html" %}
 
 <div class="card">
-  <h2 style="margin:0;">{{ run.fiscal_year_label }}</h2>
+  <a href="/dividends" class="row-link no-print">&larr; Back to Dividends</a>
+  <h2 style="margin:0.6rem 0 0;">{{ run.fiscal_year_label }}</h2>
   <p class="muted">Computed {{ run.computed_at.strftime('%d %b %Y, %H:%M') }} &middot; paid to members KES {{ "{:,.2f}".format(run.total_interest_pool) }}</p>
   {% if run.gross_pool %}
   <p class="muted">
     Gross pool KES {{ "{:,.0f}".format(run.gross_pool) }} &middot;
-    admin KES {{ "{:,.0f}".format(run.admin_amount) }} &middot;
-    transaction costs KES {{ "{:,.0f}".format(run.transaction_cost_amount) }}
+    {{ run.admin_label or "Administration" }} KES {{ "{:,.0f}".format(run.admin_amount) }} &middot;
+    {{ run.transaction_label or "Transaction costs" }} KES {{ "{:,.0f}".format(run.transaction_cost_amount) }}
   </p>
   {% endif %}
   <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>

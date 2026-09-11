@@ -15,7 +15,8 @@
 {% endif %}
 
 <div class="card">
-  <h1 style="font-size:1.3rem; margin:0;">{{ loan.full_name }}</h1>
+  <a href="/loans" class="row-link no-print">&larr; Back to Loans</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">{{ loan.full_name }}</h1>
   <div class="muted">Loan issued {{ loan.issue_date }} &middot; due {{ loan.due_date }}</div>
   <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
 </div>
