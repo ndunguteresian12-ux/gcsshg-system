@@ -57,7 +57,21 @@
 </div>
 {% endif %}
 
+<div class="card" style="padding-bottom:0.9rem;">
+  <form method="get" action="/loans" style="display:flex; gap:0.6rem; margin:0;">
+    <input type="text" name="q" value="{{ search_query }}" placeholder="Search by member name or phone..."
+           style="flex:1;">
+    <button type="submit" class="btn" style="width:auto; margin-top:0;">Search</button>
+    {% if search_query %}
+    <a href="/loans" class="btn btn-secondary" style="width:auto; margin-top:0;">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
 <div class="card">
+  {% if search_query %}
+  <p class="muted" style="margin-top:0;">Showing loans for members matching "{{ search_query }}"</p>
+  {% endif %}
   {% if loans %}
   <table>
     <tr>
@@ -111,7 +125,10 @@
     </tr>
   </table>
   {% else %}
-  <p class="muted">No loans issued yet.</p>
+  <p class="muted">
+    {% if search_query %}No loans found for members matching "{{ search_query }}".
+    {% else %}No loans issued yet.{% endif %}
+  </p>
   {% endif %}
 </div>
 

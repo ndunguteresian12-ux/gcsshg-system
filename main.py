@@ -1161,7 +1161,7 @@ def set_member_role(member_id: int, new_role: str = Form(...), session_data=Depe
 
 
 @app.get("/loans", response_class=HTMLResponse)
-def loans_page(request: Request, session_data=Depends(get_session_optional)):
+def loans_page(request: Request, q: Optional[str] = None, session_data=Depends(get_session_optional)):
     if not session_data:
         return RedirectResponse(url="/login")
     if session_data["role"] not in ("chairperson", "treasurer", "secretary"):
@@ -1170,22 +1170,38 @@ def loans_page(request: Request, session_data=Depends(get_session_optional)):
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+
+            # Stats always reflect the WHOLE group, regardless of search
             cur.execute(
                 """SELECT l.*, m.full_name FROM loans l
                    JOIN members m ON m.id = l.member_id
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
-            loans = cur.fetchall()
-            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            all_loans = cur.fetchall()
+            all_loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in all_loans]
+            total_loans_issued = sum((Decimal(l["principal"]) for l in all_loans), Decimal("0"))
+            total_repaid = sum((l["amount_repaid"] for l in all_loan_rows), Decimal("0"))
+            total_outstanding = sum((l["current_balance"] for l in all_loan_rows if l["status"] == "active"), Decimal("0"))
+            overdue_count = sum(1 for l in all_loan_rows if l["is_overdue"])
 
-            total_loans_issued = sum((Decimal(l["principal"]) for l in loans), Decimal("0"))
-            total_repaid = sum((l["amount_repaid"] for l in loan_rows), Decimal("0"))
-            total_outstanding = sum((l["current_balance"] for l in loan_rows if l["status"] == "active"), Decimal("0"))
-            overdue_count = sum(1 for l in loan_rows if l["is_overdue"])
+            # The table itself is filtered by search
+            if q and q.strip():
+                search_term = f"%{q.strip()}%"
+                cur.execute(
+                    """SELECT l.*, m.full_name FROM loans l
+                       JOIN members m ON m.id = l.member_id
+                       WHERE m.full_name ILIKE %s OR m.phone ILIKE %s
+                       ORDER BY (l.status = 'active') DESC, l.issue_date DESC""",
+                    (search_term, search_term),
+                )
+                loans = cur.fetchall()
+                loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            else:
+                loan_rows = all_loan_rows
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loans.html", {
-        "loans": loan_rows, "role": session_data["role"],
+        "loans": loan_rows, "role": session_data["role"], "search_query": q or "",
         "total_loans_issued": total_loans_issued, "total_repaid": total_repaid,
         "total_outstanding": total_outstanding, "overdue_count": overdue_count,
     })
