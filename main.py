@@ -1316,6 +1316,46 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
     return RedirectResponse(url="/loans/issue?success=Loan+issued+-+ready+for+the+next+one", status_code=303)
 
 
+def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
+    """
+    Records one repayment against a loan, splitting it between interest and
+    principal, and marks the loan cleared if the balance reaches zero.
+    Shared by both the single-loan and bulk repayment routes so the math
+    can never drift apart between them.
+    """
+    terms = terms_from_loan_row(loan)
+    override = loan.get("interest_override_periods")
+    loan_id = loan["id"]
+
+    interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms, override)
+    cur.execute(
+        "SELECT COALESCE(SUM(interest_component),0) as paid_interest FROM loan_repayments WHERE loan_id = %s",
+        (loan_id,),
+    )
+    interest_already_paid = cur.fetchone()["paid_interest"]
+    interest_outstanding = max(interest_due - interest_already_paid, Decimal("0"))
+    interest_component = min(amount_dec, interest_outstanding)
+    principal_component = amount_dec - interest_component
+
+    cur.execute(
+        """INSERT INTO loan_repayments (loan_id, payment_date, amount, principal_component,
+                                         interest_component, recorded_by)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (loan_id, payment_date, amount_dec, principal_component, interest_component, recorded_by),
+    )
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as total_repaid FROM loan_repayments WHERE loan_id = %s",
+        (loan_id,),
+    )
+    total_repaid = cur.fetchone()["total_repaid"]
+    full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms, override)
+    if full_balance <= 0:
+        cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s",
+                    (payment_date, loan_id))
+    return full_balance
+
+
 @app.post("/dashboard/repay-loan")
 def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                      payment_date_field: str = Form(...), session_data=Depends(get_session_optional)):
@@ -1328,42 +1368,54 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
             loan = cur.fetchone()
             if not loan:
                 return RedirectResponse(url="/loans?error=Loan+not+found", status_code=303)
-            terms = terms_from_loan_row(loan)
-            override = loan.get("interest_override_periods")
-
             payment_date = date.fromisoformat(payment_date_field)
             amount_dec = Decimal(str(amount))
-            interest_due = loan_interest_due(loan["principal"], loan["issue_date"], payment_date, terms, override)
-            cur.execute(
-                "SELECT COALESCE(SUM(interest_component),0) as paid_interest FROM loan_repayments WHERE loan_id = %s",
-                (loan_id,),
-            )
-            interest_already_paid = cur.fetchone()["paid_interest"]
-            interest_outstanding = max(interest_due - interest_already_paid, Decimal("0"))
-            interest_component = min(amount_dec, interest_outstanding)
-            principal_component = amount_dec - interest_component
-
-            cur.execute(
-                """INSERT INTO loan_repayments (loan_id, payment_date, amount, principal_component,
-                                                 interest_component, recorded_by)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                (loan_id, payment_date, amount_dec, principal_component, interest_component,
-                 session_data["user_id"]),
-            )
-
-            cur.execute(
-                "SELECT COALESCE(SUM(amount),0) as total_repaid FROM loan_repayments WHERE loan_id = %s",
-                (loan_id,),
-            )
-            total_repaid = cur.fetchone()["total_repaid"]
-            full_balance = loan_balance_due(loan["principal"], total_repaid, loan["issue_date"], payment_date, terms, override)
-            if full_balance <= 0:
-                cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s",
-                            (payment_date, loan_id))
+            apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
             conn.commit()
     finally:
         conn.close()
     return RedirectResponse(url=f"/loans/{loan_id}/statement?success=Repayment+recorded", status_code=303)
+
+
+@app.post("/loans/bulk-repay")
+async def bulk_repay_loans(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
+    form = await request.form()
+    payment_date_field = form.get("payment_date_field", "").strip()
+    if not payment_date_field:
+        return RedirectResponse(url="/loans?error=Pick+a+payment+date", status_code=303)
+    payment_date = date.fromisoformat(payment_date_field)
+    search_query = form.get("search_query", "")
+
+    conn = get_conn()
+    saved = 0
+    try:
+        with conn.cursor() as cur:
+            for key, value in form.multi_items():
+                if not key.startswith("amount_") or not value.strip():
+                    continue
+                try:
+                    amount_dec = Decimal(value)
+                except Exception:
+                    continue
+                if amount_dec <= 0:
+                    continue
+                loan_id = int(key.replace("amount_", ""))
+                cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+                loan = cur.fetchone()
+                if not loan:
+                    continue
+                apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
+                saved += 1
+            conn.commit()
+    finally:
+        conn.close()
+
+    redirect_url = f"/loans?success={saved}+repayment(s)+recorded"
+    if search_query:
+        redirect_url += f"&q={search_query}"
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @app.post("/loans/{loan_id}/delete")

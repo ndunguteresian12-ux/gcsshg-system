@@ -73,57 +73,84 @@
   <p class="muted" style="margin-top:0;">Showing loans for members matching "{{ search_query }}"</p>
   {% endif %}
   {% if loans %}
-  <table>
-    <tr>
-      <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
-      <th>Rate</th><th class="figure-head">Paid</th><th class="figure-head">Balance</th>
-      <th class="figure-head">Penalty</th><th>Status</th><th></th>
-    </tr>
-    {% for l in loans %}
-    <tr>
-      <td><a class="row-link" href="/loans/{{ l.id }}/statement">{{ l.full_name }}</a></td>
-      <td>{{ l.issue_date }}</td>
-      <td>{{ l.due_date }}</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
-      <td>
-        <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
-          {{ l.interest_rate }}% / {{ l.period_months }}mo
-        </span>
-        {% if l.interest_override_periods is not none %}
-        <span class="badge" style="background:#eee; color:#555;" title="Interest fixed at {{ l.interest_override_periods }} period(s), not date-calculated">fixed</span>
+  <form method="post" action="/loans/bulk-repay">
+    <input type="hidden" name="search_query" value="{{ search_query }}">
+
+    {% if role in ['chairperson', 'treasurer'] %}
+    <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:1rem; flex-wrap:wrap;">
+      <div>
+        <label for="payment_date_field" style="margin:0 0 0.25rem;">Payment date (applies to all entries below)</label>
+        <input type="date" id="payment_date_field" name="payment_date_field" required style="width:auto;">
+      </div>
+      <button type="submit" class="btn" style="width:auto; margin-top:0;">Save all repayments</button>
+    </div>
+    {% endif %}
+
+    <table>
+      <tr>
+        <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
+        <th>Rate</th><th class="figure-head">Paid</th><th class="figure-head">Balance</th>
+        <th class="figure-head">Penalty</th><th>Status</th>
+        {% if role in ['chairperson', 'treasurer'] %}<th>Amount to pay</th>{% endif %}
+        <th></th>
+      </tr>
+      {% for l in loans %}
+      <tr>
+        <td><a class="row-link" href="/loans/{{ l.id }}/statement">{{ l.full_name }}</a></td>
+        <td>{{ l.issue_date }}</td>
+        <td>{{ l.due_date }}</td>
+        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
+        <td>
+          <span class="badge {{ 'badge-low' if l.interest_tier == 'low' else 'badge-high' }}">
+            {{ l.interest_rate }}% / {{ l.period_months }}mo
+          </span>
+          {% if l.interest_override_periods is not none %}
+          <span class="badge" style="background:#eee; color:#555;" title="Interest fixed at {{ l.interest_override_periods }} period(s), not date-calculated">fixed</span>
+          {% endif %}
+        </td>
+        <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
+        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
+        <td class="figure" style="text-align:right;">
+          {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.penalty_due) }}</span>{% else %}-{% endif %}
+        </td>
+        <td>
+          {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
+          {% else %}{{ l.status }}{% endif %}
+        </td>
+        {% if role in ['chairperson', 'treasurer'] %}
+        <td>
+          {% if l.status == 'active' %}
+          <input type="number" name="amount_{{ l.id }}" min="0" step="1" max="{{ l.current_balance }}"
+                 placeholder="0" style="width:100px; padding:0.35rem; text-align:right;">
+          {% endif %}
+        </td>
         {% endif %}
-      </td>
-      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
-      <td class="figure" style="text-align:right;">
-        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.penalty_due) }}</span>{% else %}-{% endif %}
-      </td>
-      <td>
-        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
-        {% else %}{{ l.status }}{% endif %}
-      </td>
-      <td style="white-space:nowrap;">
-        {% if l.status == 'active' and role in ['chairperson', 'treasurer'] %}
-        <a href="/loans/{{ l.id }}/repay" class="row-link" style="margin-right:0.6rem;">Repay</a>
-        {% endif %}
-        {% if role == 'chairperson' %}
-        <a href="/loans/{{ l.id }}/edit" class="row-link" style="margin-right:0.6rem;">Edit</a>
-        <form method="post" action="/loans/{{ l.id }}/delete" onsubmit="return confirm('Delete this loan and all its repayment history? This cannot be undone.');" style="margin:0; display:inline;">
-          <button type="submit" class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Delete</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-    <tr style="border-top: 2px solid var(--forest); font-weight: 600;">
-      <td colspan="3">Cumulative totals</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_loans_issued) }}</td>
-      <td></td>
-      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(total_repaid) }}</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_outstanding) }}</td>
-      <td></td><td></td><td></td>
-    </tr>
-  </table>
+        <td style="white-space:nowrap;">
+          {% if role == 'chairperson' %}
+          <a href="/loans/{{ l.id }}/edit" class="row-link" style="margin-right:0.6rem;">Edit</a>
+          <button type="submit" formaction="/loans/{{ l.id }}/delete" formnovalidate
+                  onclick="return confirm('Delete this loan and all its repayment history? This cannot be undone.');"
+                  class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Delete</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      <tr style="border-top: 2px solid var(--forest); font-weight: 600;">
+        <td colspan="3">Cumulative totals</td>
+        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_loans_issued) }}</td>
+        <td></td>
+        <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(total_repaid) }}</td>
+        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_outstanding) }}</td>
+        <td></td><td></td>
+        {% if role in ['chairperson', 'treasurer'] %}<td></td>{% endif %}
+        <td></td>
+      </tr>
+    </table>
+
+    {% if role in ['chairperson', 'treasurer'] %}
+    <button type="submit" class="btn" style="width:auto; margin-top:1rem;">Save all repayments</button>
+    {% endif %}
+  </form>
   {% else %}
   <p class="muted">
     {% if search_query %}No loans found for members matching "{{ search_query }}".
