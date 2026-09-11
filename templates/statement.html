@@ -131,7 +131,7 @@
       <td>{{ "Overdue loan" if p.penalty_type == "overdue_loan" else "Missed contribution" }}</td>
       <td>{{ p.period_label }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(p.amount) }}</td>
-      <td>{% if p.waived %}<span class="muted">waived</span>{% else %}<span style="color: var(--red); font-weight:600;">owed</span>{% endif %}</td>
+      <td>{% if p.paid %}<span style="color: var(--forest-dark); font-weight:600;">paid</span>{% elif p.waived %}<span class="muted">waived</span>{% else %}<span style="color: var(--red); font-weight:600;">owed</span>{% endif %}</td>
     </tr>
     {% endfor %}
   </table>

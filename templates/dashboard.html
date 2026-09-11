@@ -44,7 +44,7 @@
     <div class="stat-label">Loans outstanding</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_loans_outstanding) }}</div>
   </div>
-  <div class="stat-card solid-gold">
+  <div class="stat-card solid-gold" title="Total repaid minus total borrowed - can be negative while a lot of principal is still out on unpaid loans">
     <div class="stat-stamp">%</div>
     <div class="stat-label">Interest earned</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_interest_earned) }}</div>

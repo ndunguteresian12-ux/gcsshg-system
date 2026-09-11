@@ -970,13 +970,17 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             )
             total_dividends_paid = cur.fetchone()["total"]
 
-            cur.execute(
-                "SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments"
-            )
-            total_interest_earned = cur.fetchone()["total"]
-
             cur.execute("SELECT COALESCE(SUM(principal),0) as total FROM loans")
             total_loans_issued = cur.fetchone()["total"]
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM loan_repayments")
+            total_repaid_all = cur.fetchone()["total"]
+
+            # Interest earned = total repaid - total borrowed (all loan principal ever
+            # issued). This can go negative while many loans remain unpaid - that's
+            # correct under this formula, not a bug: it means more principal is still
+            # out on loan than has come back in yet.
+            total_interest_earned = total_repaid_all - total_loans_issued
 
             settings = get_settings(cur)
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
@@ -1673,17 +1677,36 @@ def penalties_page(request: Request, session_data=Depends(get_session_optional))
             cur.execute(
                 """SELECT p.*, m.full_name FROM penalties p
                    JOIN members m ON m.id = p.member_id
-                   ORDER BY p.waived ASC, p.created_at DESC"""
+                   ORDER BY p.paid ASC, p.waived ASC, p.created_at DESC"""
             )
             penalties = cur.fetchall()
             total_outstanding = sum(
-                (Decimal(p["amount"]) for p in penalties if not p["waived"]), Decimal("0")
+                (Decimal(p["amount"]) for p in penalties if not p["waived"] and not p["paid"]), Decimal("0")
             )
+            total_paid = sum((Decimal(p["amount"]) for p in penalties if p["paid"]), Decimal("0"))
     finally:
         conn.close()
     return templates.TemplateResponse(request, "penalties.html", {
-        "penalties": penalties, "total_outstanding": total_outstanding, "role": session_data["role"],
+        "penalties": penalties, "total_outstanding": total_outstanding,
+        "total_paid": total_paid, "role": session_data["role"],
     })
+
+
+@app.post("/penalties/{penalty_id}/mark-paid")
+def mark_penalty_paid(penalty_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+or+treasurer+can+record+penalty+payments", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE penalties SET paid = TRUE, paid_at = now(), paid_recorded_by = %s WHERE id = %s",
+                (session_data["user_id"], penalty_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/penalties", status_code=303)
 
 
 @app.post("/penalties/{penalty_id}/waive")
@@ -1912,7 +1935,7 @@ def statement_page(request: Request, member_id: Optional[int] = None,
                 "SELECT * FROM penalties WHERE member_id = %s ORDER BY waived ASC, created_at DESC", (mid,)
             )
             penalties = cur.fetchall()
-            penalties_owed = sum((p["amount"] for p in penalties if not p["waived"]), Decimal("0"))
+            penalties_owed = sum((p["amount"] for p in penalties if not p["waived"] and not p["paid"]), Decimal("0"))
 
             cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
             group_total_contributions = cur.fetchone()["total"]
