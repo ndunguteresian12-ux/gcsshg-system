@@ -44,7 +44,11 @@
     <input type="hidden" name="loan_id" value="{{ loan.id }}">
 
     <label for="amount">Amount paid (KES)</label>
-    <input type="number" id="amount" name="amount" min="1" step="1" max="{{ loan.current_balance }}" required autofocus>
+    <input type="number" id="amount" name="amount" min="1" step="1" required autofocus>
+    <p class="muted" style="margin-top:0.3rem;">
+      If this is more than this loan's balance, the extra automatically goes toward the member's
+      other active loans, oldest due date first.
+    </p>
 
     <label for="payment_date_field">Payment date</label>
     <input type="date" id="payment_date_field" name="payment_date_field" required>

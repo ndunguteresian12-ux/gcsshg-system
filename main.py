@@ -1388,6 +1388,53 @@ def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
     return full_balance
 
 
+def get_loan_balance(cur, loan, as_of):
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
+        (loan["id"],),
+    )
+    repaid = cur.fetchone()["repaid"]
+    terms = terms_from_loan_row(loan)
+    override = loan.get("interest_override_periods")
+    return loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
+
+
+def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, recorded_by):
+    """
+    Applies a payment to the chosen loan first (up to its balance), then
+    rolls any excess onto the same member's other active loans, oldest due
+    date first. Returns (list of (loan_id, amount_applied) actually
+    recorded, leftover) - leftover is > 0 only if the member has no more
+    active loans left to absorb the excess.
+    """
+    cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+    target_loan = cur.fetchone()
+    if not target_loan:
+        return [], amount_dec
+
+    cur.execute(
+        "SELECT * FROM loans WHERE member_id = %s AND status = 'active' ORDER BY due_date ASC",
+        (target_loan["member_id"],),
+    )
+    other_active = [l for l in cur.fetchall() if l["id"] != loan_id]
+    ordered_loans = [target_loan] + other_active
+
+    remaining = amount_dec
+    applied = []
+    for loan in ordered_loans:
+        if remaining <= 0:
+            break
+        balance = get_loan_balance(cur, loan, payment_date)
+        if balance <= 0:
+            continue
+        pay_amount = min(remaining, balance)
+        apply_loan_repayment(cur, loan, pay_amount, payment_date, recorded_by)
+        applied.append((loan["id"], pay_amount))
+        remaining -= pay_amount
+
+    return applied, remaining
+
+
 @app.post("/dashboard/repay-loan")
 def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                      payment_date_field: str = Form(...), session_data=Depends(get_session_optional)):
@@ -1402,11 +1449,18 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                 return RedirectResponse(url="/loans?error=Loan+not+found", status_code=303)
             payment_date = date.fromisoformat(payment_date_field)
             amount_dec = Decimal(str(amount))
-            apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
+            applied, leftover = apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, session_data["user_id"])
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url=f"/loans/{loan_id}/statement?success=Repayment+recorded", status_code=303)
+
+    if len(applied) > 1:
+        message = f"Repayment+recorded+-+spread+across+{len(applied)}+loans"
+    else:
+        message = "Repayment+recorded"
+    if leftover > 0:
+        message += f"+-+KES+{leftover:,.0f}+could+not+be+applied+(no+more+active+loans)"
+    return RedirectResponse(url=f"/loans/{loan_id}/statement?success={message}", status_code=303)
 
 
 @app.post("/loans/bulk-repay")
@@ -1422,6 +1476,7 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
 
     conn = get_conn()
     saved = 0
+    total_leftover = Decimal("0")
     try:
         with conn.cursor() as cur:
             for key, value in form.multi_items():
@@ -1434,17 +1489,18 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
                 if amount_dec <= 0:
                     continue
                 loan_id = int(key.replace("amount_", ""))
-                cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
-                loan = cur.fetchone()
-                if not loan:
-                    continue
-                apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
-                saved += 1
+                applied, leftover = apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, session_data["user_id"])
+                if applied:
+                    saved += 1
+                total_leftover += leftover
             conn.commit()
     finally:
         conn.close()
 
-    redirect_url = f"/loans?success={saved}+repayment(s)+recorded"
+    message = f"{saved}+repayment(s)+recorded"
+    if total_leftover > 0:
+        message += f"+-+KES+{total_leftover:,.0f}+could+not+be+applied+(no+more+active+loans+for+some+members)"
+    redirect_url = f"/loans?success={message}"
     if search_query:
         redirect_url += f"&q={search_query}"
     return RedirectResponse(url=redirect_url, status_code=303)

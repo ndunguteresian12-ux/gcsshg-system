@@ -77,13 +77,16 @@
     <input type="hidden" name="search_query" value="{{ search_query }}">
 
     {% if role in ['chairperson', 'treasurer'] %}
-    <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:1rem; flex-wrap:wrap;">
+    <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:0.5rem; flex-wrap:wrap;">
       <div>
         <label for="payment_date_field" style="margin:0 0 0.25rem;">Payment date (applies to all entries below)</label>
         <input type="date" id="payment_date_field" name="payment_date_field" required style="width:auto;">
       </div>
       <button type="submit" class="btn" style="width:auto; margin-top:0;">Save all repayments</button>
     </div>
+    <p class="muted" style="margin-bottom:1rem;">
+      Paying more than a loan's balance automatically rolls the extra onto that member's other active loans, oldest due date first.
+    </p>
     {% endif %}
 
     <table>
@@ -120,7 +123,7 @@
         {% if role in ['chairperson', 'treasurer'] %}
         <td>
           {% if l.status == 'active' %}
-          <input type="number" name="amount_{{ l.id }}" min="0" step="1" max="{{ l.current_balance }}"
+          <input type="number" name="amount_{{ l.id }}" min="0" step="1"
                  placeholder="0" style="width:100px; padding:0.35rem; text-align:right;">
           {% endif %}
         </td>
