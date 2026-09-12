@@ -27,10 +27,13 @@
     Loans above {{ "{:,.0f}".format(high_loan_ceiling) }} still use the same 3-month terms but exceed the normal ceiling - a flag will show on the loan.
   </p>
   <form method="post" action="/dashboard/issue-loan">
-    <label for="member_id">Member</label>
-    <select id="member_id" name="member_id" required autofocus>
+    <label for="member_search">Search member</label>
+    <input type="text" id="member_search" placeholder="Type a name to filter the list below..." autocomplete="off">
+
+    <label for="member_id" style="margin-top:0.9rem;">Member</label>
+    <select id="member_id" name="member_id" required autofocus size="8" style="height:auto;">
       {% for m in members %}
-      <option value="{{ m.id }}">{{ m.full_name }}</option>
+      <option value="{{ m.id }}" data-name="{{ m.full_name|lower }}">{{ m.full_name }}</option>
       {% endfor %}
     </select>
 
@@ -53,5 +56,24 @@
     <button type="submit">Issue loan</button>
   </form>
 </div>
+
+<script>
+(function() {
+  const search = document.getElementById('member_search');
+  const select = document.getElementById('member_id');
+  const options = Array.from(select.options);
+
+  search.addEventListener('input', function() {
+    const term = search.value.trim().toLowerCase();
+    let firstMatch = null;
+    options.forEach(function(opt) {
+      const matches = !term || opt.dataset.name.includes(term);
+      opt.style.display = matches ? '' : 'none';
+      if (matches && !firstMatch) firstMatch = opt;
+    });
+    if (firstMatch) select.value = firstMatch.value;
+  });
+})();
+</script>
 
 {% endblock %}
