@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Black Records - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans">&larr; Loans</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Black Records</h2>
+  <a href="/loans" class="row-link">&larr; Loans</a>
+</div>
+
+<p class="muted">
+  Members with a loan formally marked as defaulted. Visible only to the chairperson, treasurer,
+  and secretary - never shown on any member's own statement.
+</p>
+
+{% if request.query_params.get('error') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  {% if defaults %}
+  <table>
+    <tr>
+      <th>Member</th><th>Principal</th><th class="figure-head">Balance</th>
+      <th>Defaulted on</th><th>Marked by</th><th>Reason</th><th></th>
+    </tr>
+    {% for l in defaults %}
+    <tr>
+      <td><a class="row-link" href="/loans/{{ l.id }}/statement">{{ l.full_name }}</a></td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
+      <td class="figure" style="text-align:right; color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.current_balance) }}</td>
+      <td>{{ l.defaulted_at.strftime('%d %b %Y') if l.defaulted_at else '-' }}</td>
+      <td>{{ l.defaulted_by_name or '-' }}</td>
+      <td>{{ l.default_reason or '-' }}</td>
+      <td>
+        {% if role == 'chairperson' %}
+        <form method="post" action="/loans/{{ l.id }}/restore-active"
+              onsubmit="return confirm('Restore this loan to active status? It will no longer appear in Black Records.');"
+              style="margin:0;">
+          <button type="submit" class="btn-secondary" style="margin:0; padding:0.3rem 0.6rem; font-size:0.78rem; width:auto;">Restore</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No defaulted loans on record.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

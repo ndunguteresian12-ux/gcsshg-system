@@ -6,6 +6,7 @@
   <a href="/members">Members</a>
   <a href="/loans">Loans</a>
   <a href="/penalties">Penalties</a>
+  <a href="/black-records">Black Records</a>
   <a href="/bank-balance">Bank</a>
   <a href="/reports">Reports</a>
   {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
@@ -58,6 +59,40 @@
     <div class="stat-stamp">D</div>
     <div class="stat-label">Dividends paid</div>
     <div class="stat-value figure gold">{{ "{:,.0f}".format(total_dividends_paid) }}</div>
+  </div>
+</div>
+
+<div class="section-title">
+  <h2 style="font-size:1rem;">Growth &amp; performance</h2>
+</div>
+<div class="stat-grid">
+  <div class="stat-card" title="Most recently completed month vs the one before it">
+    <div class="stat-label">Contribution growth (monthly)</div>
+    <div class="stat-value figure" style="color: {{ 'var(--forest-dark)' if contribution_growth.monthly_pct >= 0 else 'var(--red)' }};">
+      {{ '+' if contribution_growth.monthly_pct >= 0 else '' }}{{ contribution_growth.monthly_pct }}%
+    </div>
+  </div>
+  <div class="stat-card" title="This year so far vs the same months last year">
+    <div class="stat-label">Contribution growth (annual)</div>
+    <div class="stat-value figure" style="color: {{ 'var(--forest-dark)' if contribution_growth.annual_pct >= 0 else 'var(--red)' }};">
+      {{ '+' if contribution_growth.annual_pct >= 0 else '' }}{{ contribution_growth.annual_pct }}%
+    </div>
+  </div>
+  <div class="stat-card" title="Total expected interest across all loans, now vs one month ago">
+    <div class="stat-label">Interest charged (monthly &Delta;)</div>
+    <div class="stat-value figure" style="color: {{ 'var(--forest-dark)' if interest_growth.monthly_pct >= 0 else 'var(--red)' }};">
+      {{ '+' if interest_growth.monthly_pct >= 0 else '' }}{{ interest_growth.monthly_pct }}%
+    </div>
+  </div>
+  <div class="stat-card" title="Total expected interest across all loans, now vs one year ago">
+    <div class="stat-label">Interest charged (annual &Delta;)</div>
+    <div class="stat-value figure" style="color: {{ 'var(--forest-dark)' if interest_growth.annual_pct >= 0 else 'var(--red)' }};">
+      {{ '+' if interest_growth.annual_pct >= 0 else '' }}{{ interest_growth.annual_pct }}%
+    </div>
+  </div>
+  <div class="stat-card solid-teal" title="Share of loans paid on time or, if still active, not yet overdue">
+    <div class="stat-label">Timely loan payment</div>
+    <div class="stat-value figure">{{ timely_payment_pct if timely_payment_pct is not none else "N/A" }}{{ '%' if timely_payment_pct is not none else '' }}</div>
   </div>
 </div>
 

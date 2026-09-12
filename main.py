@@ -109,6 +109,106 @@ def compute_contribution_standing(cur, member_id, join_date, min_contribution, a
     }
 
 
+def _pct_change(new, old):
+    """Percent change from old to new. If old is 0, treat any positive new value as +100%."""
+    if old == 0:
+        return Decimal("100") if new > 0 else Decimal("0")
+    return ((new - old) / old * 100).quantize(Decimal("0.1"))
+
+
+def compute_contribution_growth(cur, today):
+    """
+    Monthly growth: the most recently COMPLETED month vs the one before it
+    (comparing two full months, not a partial in-progress month).
+    Annual growth: this calendar year so far vs the same Jan-through-this-month
+    span last year (a fair year-over-year comparison partway through a year).
+    """
+    last_complete_month = add_months(today.replace(day=1), -1)
+    month_before_that = add_months(last_complete_month, -1)
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE contribution_month = %s",
+        (last_complete_month,),
+    )
+    current_month_total = cur.fetchone()["total"]
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE contribution_month = %s",
+        (month_before_that,),
+    )
+    prior_month_total = cur.fetchone()["total"]
+    monthly_pct = _pct_change(current_month_total, prior_month_total)
+
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE EXTRACT(YEAR FROM contribution_month) = %s",
+        (today.year,),
+    )
+    this_year_total = cur.fetchone()["total"]
+    cur.execute(
+        """SELECT COALESCE(SUM(amount),0) as total FROM contributions
+           WHERE EXTRACT(YEAR FROM contribution_month) = %s AND EXTRACT(MONTH FROM contribution_month) <= %s""",
+        (today.year - 1, today.month),
+    )
+    last_year_same_span_total = cur.fetchone()["total"]
+    annual_pct = _pct_change(this_year_total, last_year_same_span_total)
+
+    return {"monthly_pct": monthly_pct, "annual_pct": annual_pct}
+
+
+def _total_expected_interest_as_of(all_loans, as_of_date):
+    total = Decimal("0")
+    for loan in all_loans:
+        if loan["issue_date"] > as_of_date:
+            continue  # loan didn't exist yet at that point in time
+        terms = terms_from_loan_row(loan)
+        override = loan.get("interest_override_periods")
+        effective_as_of = as_of_date
+        if loan["status"] == "cleared" and loan["cleared_date"] and loan["cleared_date"] < as_of_date:
+            effective_as_of = loan["cleared_date"]
+        total += loan_interest_due(loan["principal"], loan["issue_date"], effective_as_of, terms, override)
+    return total
+
+
+def compute_interest_growth(all_loans, today):
+    """
+    Compares total EXPECTED (accrued) interest across the whole portfolio,
+    evaluated as of today vs one month ago vs one year ago, using the same
+    calculator each time - so this is purely "how much has the interest
+    calculator's total grown," not affected by collection timing.
+    """
+    one_month_ago = add_months(today, -1)
+    one_year_ago = add_months(today, -12)
+
+    expected_now = _total_expected_interest_as_of(all_loans, today)
+    expected_month_ago = _total_expected_interest_as_of(all_loans, one_month_ago)
+    expected_year_ago = _total_expected_interest_as_of(all_loans, one_year_ago)
+
+    return {
+        "monthly_pct": _pct_change(expected_now, expected_month_ago),
+        "annual_pct": _pct_change(expected_now, expected_year_ago),
+    }
+
+
+def compute_timely_payment_pct(all_loans, today):
+    """
+    Of all loans with a due date, what fraction were (or are so far) paid on
+    time: cleared on/before their due date, or still active and not yet
+    overdue. Defaulted loans always count as not timely.
+    """
+    eligible = [l for l in all_loans if l["due_date"]]
+    if not eligible:
+        return None
+    timely = 0
+    for loan in eligible:
+        if loan["status"] == "cleared":
+            if loan["cleared_date"] and loan["cleared_date"] <= loan["due_date"]:
+                timely += 1
+        elif loan["status"] == "active":
+            if today <= loan["due_date"]:
+                timely += 1
+        # 'defaulted' or an overdue active loan simply isn't counted as timely
+    return (Decimal(timely) / Decimal(len(eligible)) * 100).quantize(Decimal("0.1"))
+
+
 def time_greeting():
     """Simple time-of-day greeting, adjusted for East Africa Time (UTC+3)."""
     hour = (datetime.utcnow().hour + 3) % 24
@@ -843,6 +943,65 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
     })
 
 
+@app.get("/black-records", response_class=HTMLResponse)
+def black_records_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            cur.execute(
+                """SELECT l.*, m.full_name, u.full_name as defaulted_by_name
+                   FROM loans l JOIN members m ON m.id = l.member_id
+                   LEFT JOIN users u ON u.id = l.defaulted_by
+                   WHERE l.status = 'defaulted'
+                   ORDER BY l.defaulted_at DESC"""
+            )
+            defaults = cur.fetchall()
+            default_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in defaults]
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "black_records.html", {
+        "defaults": default_rows, "role": session_data["role"],
+    })
+
+
+@app.post("/loans/{loan_id}/mark-defaulted")
+def mark_loan_defaulted(loan_id: int, default_reason: str = Form(""),
+                         session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/loans?error=Only+the+chairperson+can+mark+a+loan+as+defaulted", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE loans SET status = 'defaulted', defaulted_at = now(), defaulted_by = %s, default_reason = %s WHERE id = %s",
+                (session_data["user_id"], default_reason or None, loan_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/black-records?error=Loan+marked+as+defaulted", status_code=303)
+
+
+@app.post("/loans/{loan_id}/restore-active")
+def restore_loan_active(loan_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/black-records?error=Only+the+chairperson+can+restore+a+loan", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE loans SET status = 'active', defaulted_at = NULL, defaulted_by = NULL, default_reason = NULL WHERE id = %s",
+                (loan_id,),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/black-records?error=Loan+restored+to+active", status_code=303)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
@@ -1002,6 +1161,11 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
             actual_interest_paid = cur.fetchone()["total"]
 
+            today = date.today()
+            contribution_growth = compute_contribution_growth(cur, today)
+            interest_growth = compute_interest_growth(all_loans_full, today)
+            timely_payment_pct = compute_timely_payment_pct(all_loans_full, today)
+
             settings = get_settings(cur)
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
             active_loans = cur.fetchall()
@@ -1034,6 +1198,8 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         "total_loans_outstanding": total_loans_outstanding,
         "total_loans_issued": total_loans_issued,
         "expected_interest_total": expected_interest_total,
+        "contribution_growth": contribution_growth, "interest_growth": interest_growth,
+        "timely_payment_pct": timely_payment_pct,
         "actual_interest_paid": actual_interest_paid,
         "total_dividends_paid": total_dividends_paid,
         "monthly_labels": monthly_labels, "monthly_totals": monthly_totals,
@@ -2020,6 +2186,13 @@ def statement_page(request: Request, member_id: Optional[int] = None,
             standing = compute_contribution_standing(
                 cur, mid, member["join_date"], settings["min_monthly_contribution"], date.today()
             )
+
+            today = date.today()
+            contribution_growth = compute_contribution_growth(cur, today)
+            cur.execute("SELECT * FROM loans")
+            all_loans_full = cur.fetchall()
+            interest_growth = compute_interest_growth(all_loans_full, today)
+            timely_payment_pct = compute_timely_payment_pct(all_loans_full, today)
     finally:
         conn.close()
 
@@ -2033,6 +2206,8 @@ def statement_page(request: Request, member_id: Optional[int] = None,
         "total": total, "loans": loan_details, "dividends": dividends,
         "penalties": penalties, "penalties_owed": penalties_owed,
         "group_total_contributions": group_total_contributions,
+        "contribution_growth": contribution_growth, "interest_growth": interest_growth,
+        "timely_payment_pct": timely_payment_pct,
         "own_chart_json": own_chart_json, "greeting": time_greeting(),
         "standing": standing, "min_contribution": settings["min_monthly_contribution"],
         "role": session_data["role"],
