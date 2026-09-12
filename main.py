@@ -973,8 +973,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             cur.execute("SELECT COALESCE(SUM(principal),0) as total FROM loans")
             total_loans_issued = cur.fetchone()["total"]
 
-            # Two angles on interest, both computed per-loan using each loan's own
-            # stored terms (tier/rate/override), never re-derived from current settings:
+            # Two angles on interest:
             #
             # 1. Expected interest = what the interest calculator says has accrued
             #    across every loan ever issued, as of today (or as of the date a
@@ -982,16 +981,17 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             #    it was actually paid off). This is total owed (principal+interest)
             #    minus total principal, i.e. purely the interest portion expected.
             #
-            # 2. Actual (paid) interest = of the loans that have received at least
-            #    one repayment (even partial), how much has actually come back in
-            #    cash beyond their original principal. Untouched loans (zero
-            #    repayments) are excluded entirely rather than dragging this
-            #    figure negative by their full principal.
+            # 2. Actual (paid) interest = the sum of interest_component across every
+            #    repayment ever recorded. Each repayment already splits itself
+            #    between interest and principal at the moment it's paid (interest
+            #    first, then principal) - so summing that column directly is exactly
+            #    "cash actually received as interest," correct whether a loan is
+            #    fully cleared or only partially repaid. (Earlier this was computed
+            #    as repaid-minus-full-original-principal per loan, which went
+            #    sharply negative for any partially-repaid loan - fixed here.)
             cur.execute("SELECT * FROM loans")
             all_loans_full = cur.fetchall()
             expected_interest_total = Decimal("0")
-            actual_repaid_touched = Decimal("0")
-            actual_principal_touched = Decimal("0")
             for loan in all_loans_full:
                 terms = terms_from_loan_row(loan)
                 override = loan.get("interest_override_periods")
@@ -999,15 +999,8 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
                 interest_due = loan_interest_due(loan["principal"], loan["issue_date"], as_of, terms, override)
                 expected_interest_total += interest_due
 
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
-                    (loan["id"],),
-                )
-                repaid = cur.fetchone()["repaid"]
-                if repaid > 0:
-                    actual_repaid_touched += repaid
-                    actual_principal_touched += Decimal(loan["principal"])
-            actual_interest_paid = actual_repaid_touched - actual_principal_touched
+            cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
+            actual_interest_paid = cur.fetchone()["total"]
 
             settings = get_settings(cur)
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
