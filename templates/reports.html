@@ -3,6 +3,7 @@
 {% block header_right %}
 <nav>
   <a href="/dashboard">Overview</a>
+  <a href="/audit">Audit</a>
   <a href="/logout">Log out</a>
 </nav>
 {% endblock %}
@@ -11,6 +12,26 @@
 <div class="section-title">
   <h2 style="font-size:1.3rem;">Reports</h2>
   <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+<div class="card">
+  <h2>Data audit</h2>
+  <p class="muted">Automated checks for duplicate entries, mismatched loan balances, and similar issues - run this before any dividend payout or printed statement round.</p>
+  <a href="/audit" class="btn btn-secondary">Run audit</a>
+</div>
+
+<div class="card">
+  <h2>Member ledger</h2>
+  <p class="muted">A single member's complete, chronological transaction history - every contribution, loan, repayment, penalty, and dividend in one printable list. The definitive record for resolving any dispute.</p>
+  <form method="get" action="/reports/member-ledger">
+    <label for="ledger_member_id">Member</label>
+    <select id="ledger_member_id" name="member_id" required>
+      {% for m in members %}
+      <option value="{{ m.id }}">{{ m.full_name }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">View ledger</button>
+  </form>
 </div>
 
 <div class="card">

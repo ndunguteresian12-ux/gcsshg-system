@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Audit - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/reports">Reports</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Data audit</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+<p class="muted">
+  Automated checks that scan the whole system for the kinds of mistakes that lead to a member
+  disputing their numbers - duplicate entries, mismatched loan balances, and similar. Run this
+  periodically, especially before a dividend payout or a printed statement round.
+</p>
+
+<div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
+  <div class="stat-card solid-red">
+    <div class="stat-label">Errors (need fixing)</div>
+    <div class="stat-value figure">{{ error_count }}</div>
+  </div>
+  <div class="stat-card" style="background:#C08829; border:none;">
+    <div class="stat-label">Warnings (worth a look)</div>
+    <div class="stat-value figure" style="color:white;">{{ warning_count }}</div>
+  </div>
+</div>
+
+<div class="card">
+  {% if issues %}
+  <table>
+    <tr><th>Severity</th><th>Category</th><th>Detail</th><th></th></tr>
+    {% for i in issues %}
+    <tr>
+      <td>
+        {% if i.severity == 'error' %}<span style="color: var(--red); font-weight:600;">error</span>
+        {% else %}<span style="color: #8a611d; font-weight:600;">warning</span>{% endif %}
+      </td>
+      <td>{{ i.category }}</td>
+      <td>{{ i.detail }}</td>
+      <td>
+        {% if i.loan_id %}<a class="row-link" href="/loans/{{ i.loan_id }}/statement">View loan &rarr;</a>{% endif %}
+        {% if i.member_id %}<a class="row-link" href="/statement?member_id={{ i.member_id }}">View statement &rarr;</a>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted" style="color: var(--forest-dark); font-weight:600;">
+    &#9989; No issues found. Everything checked out clean.
+  </p>
+  {% endif %}
+</div>
+
+{% endblock %}

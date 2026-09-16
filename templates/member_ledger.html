@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Ledger - {{ member.full_name }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/reports">&larr; Reports</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card">
+  <a href="/reports" class="row-link no-print">&larr; Back to Reports</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">{{ member.full_name }} - full transaction ledger</h1>
+  <div class="muted">Member since {{ member.join_date }} &middot; every contribution, loan, repayment, penalty, and dividend, in date order</div>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="card">
+  {% if entries %}
+  <table>
+    <tr><th>Date</th><th>Type</th><th>Detail</th><th class="figure-head">Amount</th></tr>
+    {% for e in entries %}
+    <tr>
+      <td>{{ e.date.strftime('%d %b %Y') }}</td>
+      <td>{{ e.type }}</td>
+      <td>{{ e.detail }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(e.amount) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No transactions recorded for this member yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

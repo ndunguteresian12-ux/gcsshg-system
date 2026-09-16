@@ -884,7 +884,85 @@ def bank_balance_update(amount: float = Form(...), note: str = Form(""),
 def reports_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
         return RedirectResponse(url="/login")
-    return templates.TemplateResponse(request, "reports.html", {"role": session_data["role"]})
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' ORDER BY full_name")
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "reports.html", {"role": session_data["role"], "members": members})
+
+
+@app.get("/reports/member-ledger", response_class=HTMLResponse)
+def member_ledger_report(request: Request, member_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+            member = cur.fetchone()
+            if not member:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Member not found.</p>")
+
+            entries = []
+
+            cur.execute(
+                "SELECT contribution_month, amount, recorded_at FROM contributions WHERE member_id = %s",
+                (member_id,),
+            )
+            for c in cur.fetchall():
+                entries.append({
+                    "date": c["contribution_month"], "type": "Contribution",
+                    "detail": "", "amount": c["amount"],
+                })
+
+            cur.execute("SELECT * FROM loans WHERE member_id = %s", (member_id,))
+            member_loans = cur.fetchall()
+            for l in member_loans:
+                entries.append({
+                    "date": l["issue_date"], "type": "Loan issued",
+                    "detail": f"Loan #{l['id']} - {l['interest_rate']}%/{l['period_months']}mo", "amount": l["principal"],
+                })
+                cur.execute(
+                    "SELECT payment_date, amount FROM loan_repayments WHERE loan_id = %s", (l["id"],)
+                )
+                for r in cur.fetchall():
+                    entries.append({
+                        "date": r["payment_date"], "type": "Loan repayment",
+                        "detail": f"Loan #{l['id']}", "amount": r["amount"],
+                    })
+
+            cur.execute(
+                "SELECT penalty_type, period_label, amount, waived, paid, created_at FROM penalties WHERE member_id = %s",
+                (member_id,),
+            )
+            for p in cur.fetchall():
+                status = "waived" if p["waived"] else ("paid" if p["paid"] else "owed")
+                entries.append({
+                    "date": p["created_at"].date(), "type": "Penalty",
+                    "detail": f"{p['penalty_type'].replace('_', ' ')} ({p['period_label']}) - {status}",
+                    "amount": p["amount"],
+                })
+
+            cur.execute(
+                """SELECT d.dividend_amount, r.fiscal_year_label, r.computed_at FROM dividends d
+                   JOIN dividend_runs r ON r.id = d.dividend_run_id WHERE d.member_id = %s""",
+                (member_id,),
+            )
+            for d in cur.fetchall():
+                entries.append({
+                    "date": d["computed_at"].date(), "type": "Dividend",
+                    "detail": d["fiscal_year_label"], "amount": d["dividend_amount"],
+                })
+
+            entries.sort(key=lambda e: e["date"])
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "member_ledger.html", {
+        "member": member, "entries": entries, "role": session_data["role"],
+    })
 
 
 @app.get("/reports/contributions", response_class=HTMLResponse)
@@ -1010,6 +1088,104 @@ def restore_loan_active(loan_id: int, session_data=Depends(get_session_optional)
     finally:
         conn.close()
     return RedirectResponse(url="/black-records?error=Loan+restored+to+active", status_code=303)
+
+
+@app.get("/audit", response_class=HTMLResponse)
+def audit_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            issues = []
+
+            # 1. Possible duplicate contributions: same member, same month, same
+            # amount, entered more than once (top-ups of a DIFFERENT amount in
+            # the same month are normal and not flagged).
+            cur.execute(
+                """SELECT c.member_id, m.full_name, c.contribution_month, c.amount, COUNT(*) as cnt
+                   FROM contributions c JOIN members m ON m.id = c.member_id
+                   GROUP BY c.member_id, m.full_name, c.contribution_month, c.amount
+                   HAVING COUNT(*) > 1
+                   ORDER BY c.contribution_month DESC"""
+            )
+            dup_contributions = cur.fetchall()
+            for d in dup_contributions:
+                issues.append({
+                    "severity": "warning",
+                    "category": "Possible duplicate contribution",
+                    "detail": f"{d['full_name']}: {d['amount']} entered {d['cnt']} times for "
+                              f"{d['contribution_month'].strftime('%b %Y')}",
+                    "member_id": d["member_id"],
+                })
+
+            # 2 & 3. Loan status vs recomputed balance mismatches
+            cur.execute("SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id")
+            all_loans = cur.fetchall()
+            for loan in all_loans:
+                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+                balance = detail["current_balance"]
+                if loan["status"] == "cleared" and balance > Decimal("0.01"):
+                    issues.append({
+                        "severity": "error",
+                        "category": "Cleared loan with outstanding balance",
+                        "detail": f"{loan['full_name']}: loan #{loan['id']} is marked cleared but shows a "
+                                  f"balance of {balance:,.2f}",
+                        "loan_id": loan["id"],
+                    })
+                if loan["status"] == "active" and balance <= 0:
+                    issues.append({
+                        "severity": "warning",
+                        "category": "Active loan with zero/negative balance",
+                        "detail": f"{loan['full_name']}: loan #{loan['id']} is still marked active but its "
+                                  f"balance is {balance:,.2f} - likely should be cleared",
+                        "loan_id": loan["id"],
+                    })
+                if loan["status"] in ("active", "cleared") and not loan["due_date"]:
+                    issues.append({
+                        "severity": "warning",
+                        "category": "Loan missing a due date",
+                        "detail": f"{loan['full_name']}: loan #{loan['id']} has no due date on record",
+                        "loan_id": loan["id"],
+                    })
+
+            # 4. Multiple active members sharing the same phone number
+            cur.execute(
+                """SELECT phone, array_agg(full_name) as names, array_agg(id) as ids, COUNT(*) as cnt
+                   FROM members WHERE status = 'active' AND phone IS NOT NULL AND phone != ''
+                   GROUP BY phone HAVING COUNT(*) > 1"""
+            )
+            dup_phones = cur.fetchall()
+            for d in dup_phones:
+                issues.append({
+                    "severity": "error",
+                    "category": "Duplicate phone number across members",
+                    "detail": f"Phone {d['phone']} is used by {', '.join(d['names'])} - possible accidental duplicate member",
+                })
+
+            # 5. Contributions at or below zero (defensive check - schema should prevent this)
+            cur.execute(
+                """SELECT c.id, m.full_name, c.contribution_month, c.amount FROM contributions c
+                   JOIN members m ON m.id = c.member_id WHERE c.amount <= 0"""
+            )
+            bad_contributions = cur.fetchall()
+            for b in bad_contributions:
+                issues.append({
+                    "severity": "error",
+                    "category": "Non-positive contribution amount",
+                    "detail": f"{b['full_name']}: {b['amount']} recorded for {b['contribution_month']}",
+                    "member_id": None,
+                })
+
+            error_count = sum(1 for i in issues if i["severity"] == "error")
+            warning_count = sum(1 for i in issues if i["severity"] == "warning")
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "audit.html", {
+        "issues": issues, "error_count": error_count, "warning_count": warning_count,
+        "role": session_data["role"],
+    })
 
 
 @app.get("/health")

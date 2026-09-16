@@ -5,8 +5,10 @@
   <a href="/dashboard">Overview</a>
   <a href="/members">Members</a>
   <a href="/penalties">Penalties</a>
+  <a href="/black-records">Black Records</a>
   <a href="/bank-balance">Bank</a>
   <a href="/reports">Reports</a>
+  <a href="/audit">Audit</a>
   {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
 </nav>
@@ -75,6 +77,7 @@
   {% if loans %}
   <form method="post" action="/loans/bulk-repay">
     <input type="hidden" name="search_query" value="{{ search_query }}">
+    <input type="hidden" id="default_reason_field" name="default_reason" value="">
 
     {% if role in ['chairperson', 'treasurer'] %}
     <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:0.5rem; flex-wrap:wrap;">
@@ -131,6 +134,11 @@
         <td style="white-space:nowrap;">
           {% if role == 'chairperson' %}
           <a href="/loans/{{ l.id }}/edit" class="row-link" style="margin-right:0.6rem;">Edit</a>
+          {% if l.status == 'active' %}
+          <button type="submit" formaction="/loans/{{ l.id }}/mark-defaulted" formnovalidate
+                  onclick="document.getElementById('default_reason_field').value = prompt('Reason for marking this loan as defaulted (optional):') || ''; return confirm('Mark this loan as defaulted? This appears in Black Records, visible only to officials.');"
+                  class="btn-secondary" style="margin:0 0.4rem 0 0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto; color: var(--red); border-color:#f3c6c1;">Mark defaulted</button>
+          {% endif %}
           <button type="submit" formaction="/loans/{{ l.id }}/delete" formnovalidate
                   onclick="return confirm('Delete this loan and all its repayment history? This cannot be undone.');"
                   class="btn-secondary" style="margin:0; padding: 0.3rem 0.6rem; font-size:0.78rem; width:auto;">Delete</button>

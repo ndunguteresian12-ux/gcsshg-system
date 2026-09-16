@@ -8,6 +8,7 @@
   <a href="/black-records">Black Records</a>
   <a href="/bank-balance">Bank</a>
   <a href="/reports">Reports</a>
+  <a href="/audit">Audit</a>
   {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
 </nav>
@@ -74,7 +75,10 @@
           {% endif %}
         {% endif %}
       </td>
-      <td><a class="row-link" href="/statement?member_id={{ m.id }}">Statement &rarr;</a></td>
+      <td>
+        <a class="row-link" href="/statement?member_id={{ m.id }}">Statement &rarr;</a><br>
+        <a class="row-link" href="/reports/member-ledger?member_id={{ m.id }}" style="font-size:0.78rem;">Full ledger &rarr;</a>
+      </td>
       <td>
         {% if role == 'chairperson' %}
         <a href="/members/{{ m.id }}/edit" class="row-link" style="margin-right:0.6rem;">Edit</a>
