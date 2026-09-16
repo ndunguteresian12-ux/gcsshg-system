@@ -333,6 +333,7 @@ class LoanCreate(BaseModel):
     principal: Decimal
     issue_date: Optional[date] = None
     interest_override_periods: Optional[int] = None
+    confirm_duplicate: bool = False
 
 
 class RepaymentCreate(BaseModel):
@@ -507,6 +508,16 @@ def issue_loan(payload: LoanCreate, officer=Depends(require_loan_officer)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            issue_date = payload.issue_date or date.today()
+            if not payload.confirm_duplicate:
+                dup = find_duplicate_loan(cur, payload.member_id, payload.principal, issue_date)
+                if dup:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"A loan of this exact amount and date already exists (loan #{dup['id']}). "
+                               f"Set confirm_duplicate=true to issue anyway.",
+                    )
+
             settings = get_settings(cur)
             terms = classify_loan(
                 payload.principal,
@@ -517,7 +528,6 @@ def issue_loan(payload: LoanCreate, officer=Depends(require_loan_officer)):
                 mid_deadline=settings["high_loan_deadline_months"],
                 high_ceiling=settings["high_loan_ceiling"],
             )
-            issue_date = payload.issue_date or date.today()
             due_date = compute_due_date(issue_date, terms)
             cur.execute(
                 """INSERT INTO loans (member_id, principal, issue_date, due_date, interest_tier,
@@ -1475,13 +1485,24 @@ def loan_statement_page(loan_id: int, request: Request, session_data=Depends(get
 def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
                      issue_date_field: str = Form(...),
                      interest_override_periods: Optional[str] = Form(None),
+                     confirm_duplicate: Optional[str] = Form(None),
                      session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+issue+loans", status_code=303)
     override_val = int(interest_override_periods) if interest_override_periods else None
+    issue_date = date.fromisoformat(issue_date_field)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            if not confirm_duplicate:
+                dup = find_duplicate_loan(cur, member_id, Decimal(str(principal)), issue_date)
+                if dup:
+                    return RedirectResponse(
+                        url=f"/loans/issue?error=A+loan+of+this+exact+amount+and+date+already+exists+for+this+member+(loan+%23{dup['id']})+-+check+the+box+below+if+this+is+intentional+and+resubmit"
+                            f"&prefill_member={member_id}&prefill_principal={principal}&prefill_date={issue_date_field}",
+                        status_code=303,
+                    )
+
             settings = get_settings(cur)
             terms = classify_loan(
                 Decimal(str(principal)),
@@ -1492,7 +1513,6 @@ def issue_loan_form(member_id: int = Form(...), principal: float = Form(...),
                 mid_deadline=settings["high_loan_deadline_months"],
                 high_ceiling=settings["high_loan_ceiling"],
             )
-            issue_date = date.fromisoformat(issue_date_field)
             due_date = compute_due_date(issue_date, terms)
             cur.execute(
                 """INSERT INTO loans (member_id, principal, issue_date, due_date, interest_tier,
@@ -1545,6 +1565,21 @@ def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
         cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s",
                     (payment_date, loan_id))
     return full_balance
+
+
+def find_duplicate_loan(cur, member_id, principal, issue_date, exclude_loan_id=None):
+    """
+    A 'duplicate' is the same member, same principal amount, same issue
+    date - the exact signature of accidentally submitting the same loan
+    twice. Returns the existing loan row if found, else None.
+    """
+    query = "SELECT * FROM loans WHERE member_id = %s AND principal = %s AND issue_date = %s"
+    params = [member_id, principal, issue_date]
+    if exclude_loan_id:
+        query += " AND id != %s"
+        params.append(exclude_loan_id)
+    cur.execute(query, params)
+    return cur.fetchone()
 
 
 def get_loan_balance(cur, loan, as_of):

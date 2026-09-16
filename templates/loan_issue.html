@@ -38,10 +38,19 @@
     </select>
 
     <label for="principal">Loan amount (KES)</label>
-    <input type="number" id="principal" name="principal" min="1" step="1" required>
+    <input type="number" id="principal" name="principal" min="1" step="1" required
+           value="{{ request.query_params.get('prefill_principal', '') }}">
 
     <label for="issue_date_field">Issue date</label>
-    <input type="date" id="issue_date_field" name="issue_date_field" required>
+    <input type="date" id="issue_date_field" name="issue_date_field" required
+           value="{{ request.query_params.get('prefill_date', '') }}">
+
+    {% if request.query_params.get('error') and 'already exists' in request.query_params.get('error') %}
+    <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.8rem; font-weight:500;">
+      <input type="checkbox" name="confirm_duplicate" value="yes" style="width:auto;">
+      Yes, this is a genuine separate loan - issue it anyway
+    </label>
+    {% endif %}
 
     <label for="interest_override_periods">
       Legacy loan? Months of interest actually due (optional)
@@ -73,6 +82,11 @@
     });
     if (firstMatch) select.value = firstMatch.value;
   });
+
+  const prefillMember = "{{ request.query_params.get('prefill_member', '') }}";
+  if (prefillMember) {
+    select.value = prefillMember;
+  }
 })();
 </script>
 
