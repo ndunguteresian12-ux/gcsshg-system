@@ -19,6 +19,10 @@ import math
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
+from urllib.parse import urlencode, quote_plus
+import smtplib
+import ssl
+from email.mime.text import MIMEText
 
 from dotenv import load_dotenv
 load_dotenv()  # reads .env in this folder so DATABASE_URL/SESSION_SECRET don't need manual `set`
@@ -43,6 +47,13 @@ from calculations import (
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/gcsshg")
 SECRET_KEY = os.environ.get("SESSION_SECRET", "change-me-in-production")
 SITE_URL = os.environ.get("SITE_URL", "http://127.0.0.1:8000")
+
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USERNAME)
+SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "GCSSHG")
 signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
 app = FastAPI(title="GCSSHG Management System")
@@ -209,6 +220,32 @@ def compute_timely_payment_pct(all_loans, today):
     return (Decimal(timely) / Decimal(len(eligible)) * 100).quantize(Decimal("0.1"))
 
 
+def send_email(to_email: str, subject: str, body_text: str) -> tuple:
+    """
+    Sends a plain-text email via SMTP. Returns (success: bool, error_message: str|None).
+    Never raises - a misconfigured or failed send should degrade gracefully
+    rather than crash the request that triggered it.
+    """
+    if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD:
+        return False, "Email is not configured yet - set SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD."
+    if not to_email:
+        return False, "No email address on file."
+    try:
+        msg = MIMEText(body_text, "plain", "utf-8")
+        msg["Subject"] = subject
+        msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
+        msg["To"] = to_email
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls(context=context)
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def time_greeting():
     """Simple time-of-day greeting, adjusted for East Africa Time (UTC+3)."""
     hour = (datetime.utcnow().hour + 3) % 24
@@ -234,18 +271,29 @@ def terms_from_loan_row(loan) -> LoanTerms:
     )
 
 
-def build_loan_detail(cur, loan, as_of, penalty_amount):
+def get_repaid_map(cur):
+    """One query for every loan's total repaid, instead of one query per loan."""
+    cur.execute("SELECT loan_id, COALESCE(SUM(amount),0) as repaid FROM loan_repayments GROUP BY loan_id")
+    return {row["loan_id"]: row["repaid"] for row in cur.fetchall()}
+
+
+def build_loan_detail(cur, loan, as_of, penalty_amount, repaid_map=None):
     """
     Computes repaid amount, current balance, overdue status, and penalty
     owed for a single loan - used consistently everywhere a loan is displayed.
+    Pass repaid_map (from get_repaid_map) when building details for many
+    loans at once, to avoid a separate query per loan.
     """
     terms = terms_from_loan_row(loan)
     override = loan.get("interest_override_periods")
-    cur.execute(
-        "SELECT COALESCE(SUM(amount), 0) as repaid FROM loan_repayments WHERE loan_id = %s",
-        (loan["id"],),
-    )
-    repaid = cur.fetchone()["repaid"]
+    if repaid_map is not None:
+        repaid = repaid_map.get(loan["id"], Decimal("0"))
+    else:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount), 0) as repaid FROM loan_repayments WHERE loan_id = %s",
+            (loan["id"],),
+        )
+        repaid = cur.fetchone()["repaid"]
     balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
     due = loan["due_date"]
     overdue = is_loan_overdue(due, balance, as_of) if due else False
@@ -880,6 +928,72 @@ def bank_balance_update(amount: float = Form(...), note: str = Form(""),
     return RedirectResponse(url="/bank-balance", status_code=303)
 
 
+@app.get("/send-email", response_class=HTMLResponse)
+def send_email_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, full_name, email FROM members WHERE status = 'active' ORDER BY full_name"
+            )
+            members = cur.fetchall()
+    finally:
+        conn.close()
+    email_configured = bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD)
+    return templates.TemplateResponse(request, "send_email.html", {
+        "members": members, "role": session_data["role"], "email_configured": email_configured,
+    })
+
+
+@app.post("/send-email")
+async def send_email_submit(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    form = await request.form()
+    subject = form.get("subject", "").strip()
+    body = form.get("body", "").strip()
+    send_to_all = form.get("send_to_all") == "yes"
+    selected_ids = [int(v) for k, v in form.multi_items() if k == "member_ids"]
+
+    if not subject or not body:
+        return RedirectResponse(url="/send-email?error=Subject+and+message+are+both+required", status_code=303)
+
+    conn = get_conn()
+    sent, skipped_no_email = 0, 0
+    try:
+        with conn.cursor() as cur:
+            if send_to_all:
+                cur.execute("SELECT id, full_name, email FROM members WHERE status = 'active'")
+                recipients = cur.fetchall()
+            elif selected_ids:
+                cur.execute(
+                    "SELECT id, full_name, email FROM members WHERE id = ANY(%s)", (selected_ids,)
+                )
+                recipients = cur.fetchall()
+            else:
+                return RedirectResponse(url="/send-email?error=Pick+at+least+one+member+or+send+to+all", status_code=303)
+
+            for m in recipients:
+                if not m["email"]:
+                    skipped_no_email += 1
+                    continue
+                personalized_body = f"Dear {m['full_name']},\n\n{body}\n\n- GCSSHG"
+                ok, err = send_email(m["email"], subject, personalized_body)
+                if ok:
+                    sent += 1
+                else:
+                    skipped_no_email += 1
+    finally:
+        conn.close()
+
+    message = f"Sent+to+{sent}+member(s)"
+    if skipped_no_email:
+        message += f"+-+{skipped_no_email}+skipped+(no+email+on+file+or+send+failed)"
+    return RedirectResponse(url=f"/send-email?success={message}", status_code=303)
+
+
 @app.get("/reports", response_class=HTMLResponse)
 def reports_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
@@ -1012,12 +1126,13 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+            repaid_map = get_repaid_map(cur)
             cur.execute(
                 """SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
             loans = cur.fetchall()
-            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in loans]
             total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
             total_interest = sum(
                 (l["current_balance"] - l["principal"] + l["amount_repaid"] for l in loan_rows), Decimal("0")
@@ -1039,6 +1154,7 @@ def black_records_page(request: Request, session_data=Depends(get_session_option
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+            repaid_map = get_repaid_map(cur)
             cur.execute(
                 """SELECT l.*, m.full_name, u.full_name as defaulted_by_name
                    FROM loans l JOIN members m ON m.id = l.member_id
@@ -1047,7 +1163,7 @@ def black_records_page(request: Request, session_data=Depends(get_session_option
                    ORDER BY l.defaulted_at DESC"""
             )
             defaults = cur.fetchall()
-            default_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in defaults]
+            default_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in defaults]
     finally:
         conn.close()
     return templates.TemplateResponse(request, "black_records.html", {
@@ -1123,8 +1239,9 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
             # 2 & 3. Loan status vs recomputed balance mismatches
             cur.execute("SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id")
             all_loans = cur.fetchall()
+            repaid_map = get_repaid_map(cur)
             for loan in all_loans:
-                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map)
                 balance = detail["current_balance"]
                 if loan["status"] == "cleared" and balance > Decimal("0.01"):
                     issues.append({
@@ -1231,6 +1348,40 @@ def login_submit(phone: str = Form(...), password: str = Form(...)):
             return response
     finally:
         conn.close()
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request, sent: Optional[str] = None):
+    return templates.TemplateResponse(request, "forgot_password.html", {"sent": sent})
+
+
+@app.post("/forgot-password")
+def forgot_password_submit(identifier: str = Form(...)):
+    identifier = identifier.strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM users WHERE (phone = %s OR email = %s) AND is_active = TRUE",
+                (identifier, identifier),
+            )
+            user = cur.fetchone()
+            if user and user["email"]:
+                token = signer.dumps({"user_id": user["id"], "purpose": "set_password"})
+                link = f"{SITE_URL}/set-password?token={token}"
+                body = (
+                    f"Hello {user['full_name']},\n\n"
+                    f"Use this link to reset your GCSSHG password. It's valid for 48 hours.\n\n"
+                    f"{link}\n\n"
+                    f"If you didn't request this, you can ignore this email."
+                )
+                send_email(user["email"], "Reset your GCSSHG password", body)
+    finally:
+        conn.close()
+    # Always show the same message, whether or not an account was found or
+    # has an email on file - this avoids revealing which phone/email is
+    # registered to someone who doesn't already know.
+    return RedirectResponse(url="/forgot-password?sent=1", status_code=303)
 
 
 @app.get("/set-password", response_class=HTMLResponse)
@@ -1355,10 +1506,11 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             settings = get_settings(cur)
             cur.execute("SELECT * FROM loans WHERE status = 'active'")
             active_loans = cur.fetchall()
+            repaid_map = get_repaid_map(cur)
             total_loans_outstanding = Decimal("0")
             overdue_count = 0
             for loan in active_loans:
-                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map)
                 total_loans_outstanding += detail["current_balance"]
                 if detail["is_overdue"]:
                     overdue_count += 1
@@ -1498,16 +1650,21 @@ def edit_member_page(member_id: int, request: Request, session_data=Depends(get_
 
 @app.post("/members/{member_id}/edit")
 def edit_member_submit(member_id: int, full_name: str = Form(...), phone: str = Form(""),
-                        join_date_field: str = Form(...), session_data=Depends(get_session_optional)):
+                        email: str = Form(""), join_date_field: str = Form(...),
+                        session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/members?error=Only+the+chairperson+can+edit+members", status_code=303)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE members SET full_name = %s, phone = %s, join_date = %s WHERE id = %s",
-                (full_name, phone or None, date.fromisoformat(join_date_field), member_id),
+                "UPDATE members SET full_name = %s, phone = %s, email = %s, join_date = %s WHERE id = %s "
+                "RETURNING user_id",
+                (full_name, phone or None, email or None, date.fromisoformat(join_date_field), member_id),
             )
+            row = cur.fetchone()
+            if row and row["user_id"] and email:
+                cur.execute("UPDATE users SET email = %s WHERE id = %s", (email, row["user_id"]))
             conn.commit()
     finally:
         conn.close()
@@ -1547,32 +1704,30 @@ def loans_page(request: Request, q: Optional[str] = None, session_data=Depends(g
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
+            repaid_map = get_repaid_map(cur)
 
-            # Stats always reflect the WHOLE group, regardless of search
             cur.execute(
-                """SELECT l.*, m.full_name FROM loans l
+                """SELECT l.*, m.full_name, m.phone FROM loans l
                    JOIN members m ON m.id = l.member_id
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
             all_loans = cur.fetchall()
-            all_loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in all_loans]
+            all_loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in all_loans]
+
+            # Stats always reflect the WHOLE group, regardless of search
             total_loans_issued = sum((Decimal(l["principal"]) for l in all_loans), Decimal("0"))
             total_repaid = sum((l["amount_repaid"] for l in all_loan_rows), Decimal("0"))
             total_outstanding = sum((l["current_balance"] for l in all_loan_rows if l["status"] == "active"), Decimal("0"))
             overdue_count = sum(1 for l in all_loan_rows if l["is_overdue"])
 
-            # The table itself is filtered by search
+            # The table itself is filtered by search - done in Python against
+            # what's already fetched, rather than a second DB round-trip
             if q and q.strip():
-                search_term = f"%{q.strip()}%"
-                cur.execute(
-                    """SELECT l.*, m.full_name FROM loans l
-                       JOIN members m ON m.id = l.member_id
-                       WHERE m.full_name ILIKE %s OR m.phone ILIKE %s
-                       ORDER BY (l.status = 'active') DESC, l.issue_date DESC""",
-                    (search_term, search_term),
-                )
-                loans = cur.fetchall()
-                loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+                term = q.strip().lower()
+                loan_rows = [
+                    l for l in all_loan_rows
+                    if term in (l["full_name"] or "").lower() or term in (l["phone"] or "").lower()
+                ]
             else:
                 loan_rows = all_loan_rows
     finally:
@@ -1602,7 +1757,8 @@ def issue_loan_page(request: Request, session_data=Depends(get_session_optional)
 
 
 @app.get("/loans/{loan_id}/repay", response_class=HTMLResponse)
-def repay_loan_page(loan_id: int, request: Request, session_data=Depends(get_session_optional)):
+def repay_loan_page(loan_id: int, request: Request, q: Optional[str] = None,
+                     session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
     conn = get_conn()
@@ -1620,7 +1776,7 @@ def repay_loan_page(loan_id: int, request: Request, session_data=Depends(get_ses
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loan_repay.html", {
-        "loan": detail, "role": session_data["role"],
+        "loan": detail, "role": session_data["role"], "search_query": q or "",
     })
 
 
@@ -1807,7 +1963,8 @@ def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, record
 
 @app.post("/dashboard/repay-loan")
 def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
-                     payment_date_field: str = Form(...), session_data=Depends(get_session_optional)):
+                     payment_date_field: str = Form(...), search_query: str = Form(""),
+                     session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
     conn = get_conn()
@@ -1830,6 +1987,9 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
         message = "Repayment+recorded"
     if leftover > 0:
         message += f"+-+KES+{leftover:,.0f}+could+not+be+applied+(no+more+active+loans)"
+
+    if search_query:
+        return RedirectResponse(url=f"/loans?success={message}&q={quote_plus(search_query)}", status_code=303)
     return RedirectResponse(url=f"/loans/{loan_id}/statement?success={message}", status_code=303)
 
 
@@ -1846,7 +2006,6 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
 
     conn = get_conn()
     saved = 0
-    total_leftover = Decimal("0")
     try:
         with conn.cursor() as cur:
             for key, value in form.multi_items():
@@ -1859,20 +2018,24 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
                 if amount_dec <= 0:
                     continue
                 loan_id = int(key.replace("amount_", ""))
-                applied, leftover = apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, session_data["user_id"])
-                if applied:
-                    saved += 1
-                total_leftover += leftover
+                cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+                loan = cur.fetchone()
+                if not loan:
+                    continue
+                # Applied exactly to THIS loan, as entered - no overflow to other
+                # loans. In bulk mode the officer is already allocating amounts
+                # across multiple rows themselves, so auto-cascading would
+                # second-guess a choice they've already made.
+                apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
+                saved += 1
             conn.commit()
     finally:
         conn.close()
 
     message = f"{saved}+repayment(s)+recorded"
-    if total_leftover > 0:
-        message += f"+-+KES+{total_leftover:,.0f}+could+not+be+applied+(no+more+active+loans+for+some+members)"
     redirect_url = f"/loans?success={message}"
     if search_query:
-        redirect_url += f"&q={search_query}"
+        redirect_url += f"&q={quote_plus(search_query)}"
     return RedirectResponse(url=redirect_url, status_code=303)
 
 

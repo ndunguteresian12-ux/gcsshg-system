@@ -30,14 +30,15 @@ def main():
     if role not in ("chairperson", "treasurer", "secretary"):
         print("Role must be chairperson, treasurer, or secretary.")
         return
+    email = input("Email (optional, enables 'forgot password' for this account): ").strip()
 
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO users (phone, full_name, password_hash, role) "
-                "VALUES (%s, %s, NULL, %s) RETURNING id",
-                (phone, full_name, role),
+                "INSERT INTO users (phone, full_name, password_hash, role, email) "
+                "VALUES (%s, %s, NULL, %s, %s) RETURNING id",
+                (phone, full_name, role, email or None),
             )
             user_id = cur.fetchone()["id"]
             conn.commit()

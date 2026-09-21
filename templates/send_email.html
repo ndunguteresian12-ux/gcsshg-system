@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Send Email - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/dashboard">Overview</a>
+  <a href="/members">Members</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Send email to members</h2>
+  <a href="/dashboard" class="row-link">&larr; Overview</a>
+</div>
+
+{% if not email_configured %}
+<div class="error">
+  Email isn't set up yet - the chairperson needs to set SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD
+  in the app's environment variables before this will actually send anything.
+</div>
+{% endif %}
+
+{% if request.query_params.get('success') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('success') }}</div>
+{% endif %}
+{% if request.query_params.get('error') %}
+<div class="error">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/send-email">
+    <label>
+      <input type="checkbox" name="send_to_all" value="yes" id="send_to_all" style="width:auto;">
+      Send to all active members
+    </label>
+
+    <label for="member_ids" style="margin-top:0.9rem;">Or pick specific members</label>
+    <select id="member_ids" name="member_ids" multiple size="8" style="height:auto;">
+      {% for m in members %}
+      <option value="{{ m.id }}">{{ m.full_name }}{% if not m.email %} (no email on file){% endif %}</option>
+      {% endfor %}
+    </select>
+    <p class="muted" style="margin-top:0.3rem;">Hold Ctrl (or Cmd on Mac) to select more than one. Members without an email on file will be skipped.</p>
+
+    <label for="subject" style="margin-top:0.9rem;">Subject</label>
+    <input type="text" id="subject" name="subject" required>
+
+    <label for="body">Message</label>
+    <textarea id="body" name="body" rows="8" required style="width:100%; padding:0.55rem 0.6rem; border:1px solid var(--border); border-radius:6px; font-family:inherit; font-size:0.95rem;"></textarea>
+    <p class="muted" style="margin-top:0.3rem;">Each member gets a personalized copy addressed to them by name.</p>
+
+    <button type="submit">Send</button>
+  </form>
+</div>
+
+{% endblock %}
