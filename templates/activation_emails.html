@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Send Activation Emails - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/members">&larr; Members</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Send account activation emails</h2>
+</div>
+
+<p class="muted">
+  Creates a login and emails each selected member a link to set their own password, plus
+  instructions for installing the app on their phone. Only members with both a phone number and
+  an email on file can receive one - add missing details via Members &rarr; Edit.
+</p>
+
+{% if request.query_params.get('error') %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('error') }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Ready to send ({{ eligible|length }})</h2>
+  {% if eligible %}
+  <form method="post" action="/members/send-activation-emails">
+    <label style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.6rem;">
+      <input type="checkbox" id="select_all" style="width:auto;"> Select all
+    </label>
+    <table>
+      <tr><th></th><th>Name</th><th>Phone</th><th>Email</th></tr>
+      {% for m in eligible %}
+      <tr>
+        <td><input type="checkbox" name="member_ids" value="{{ m.id }}" class="member-checkbox" style="width:auto;"></td>
+        <td>{{ m.full_name }}</td>
+        <td>{{ m.phone }}</td>
+        <td>{{ m.email }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <button type="submit" style="width:auto;">Send activation emails</button>
+  </form>
+  {% else %}
+  <p class="muted">No members are ready - everyone either already has a login, or is missing a phone/email.</p>
+  {% endif %}
+</div>
+
+{% if ineligible %}
+<div class="card">
+  <h2>Missing details ({{ ineligible|length }})</h2>
+  <table>
+    <tr><th>Name</th><th>Phone</th><th>Email</th><th></th></tr>
+    {% for m in ineligible %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td>{{ m.phone or "-" }}</td>
+      <td>{{ m.email or "-" }}</td>
+      <td><a class="row-link" href="/members/{{ m.id }}/edit">Add details &rarr;</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<script>
+document.getElementById('select_all')?.addEventListener('change', function() {
+  document.querySelectorAll('.member-checkbox').forEach(cb => cb.checked = this.checked);
+});
+</script>
+
+{% endblock %}

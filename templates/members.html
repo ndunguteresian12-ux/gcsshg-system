@@ -19,7 +19,10 @@
 <div class="section-title">
   <h2 style="font-size:1.3rem;">Members</h2>
   <span>
-    {% if role == 'chairperson' %}<a href="/members/archived" class="row-link" style="margin-right:0.8rem;">Archived &rarr;</a>{% endif %}
+    {% if role == 'chairperson' %}
+    <a href="/members/activation-emails" class="row-link" style="margin-right:0.8rem;">Send activation emails &rarr;</a>
+    <a href="/members/archived" class="row-link" style="margin-right:0.8rem;">Archived &rarr;</a>
+    {% endif %}
     <a href="/dashboard" class="row-link">&larr; Overview</a>
   </span>
 </div>

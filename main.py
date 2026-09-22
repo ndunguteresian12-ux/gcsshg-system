@@ -2756,6 +2756,110 @@ def _render_invite_link(member_name: str, link: str) -> HTMLResponse:
     """)
 
 
+def render_activation_email_body(member_name: str, link: str) -> str:
+    first_name = member_name.split(" ")[0]
+    return (
+        f"Hello {first_name},\n\n"
+        f"Welcome to the GCSSHG online system! You can now view your contributions, loans, "
+        f"penalties, and dividends anytime from your phone.\n\n"
+        f"STEP 1 - SET YOUR PASSWORD\n"
+        f"Open this link to create your password (valid for 48 hours):\n"
+        f"{link}\n\n"
+        f"Once set, sign in anytime at {SITE_URL}/login using your phone number and that password.\n\n"
+        f"STEP 2 - INSTALL THE APP ON YOUR PHONE (optional, but recommended)\n\n"
+        f"On Android (Chrome):\n"
+        f"  1. Open {SITE_URL} in Chrome\n"
+        f"  2. Tap the menu (three dots, top right) and choose \"Add to Home screen\" or \"Install app\"\n"
+        f"  3. Confirm - the GCSSHG icon will appear on your home screen\n\n"
+        f"On iPhone (Safari - this only works in Safari, not Chrome):\n"
+        f"  1. Open {SITE_URL} in Safari\n"
+        f"  2. Tap the Share icon (square with an arrow up) at the bottom of the screen\n"
+        f"  3. Scroll down and tap \"Add to Home Screen\"\n\n"
+        f"Once installed, tap the GCSSHG icon anytime to check your statement - no need to open a browser.\n\n"
+        f"If you have any trouble, contact your chairperson, treasurer, or secretary.\n\n"
+        f"- GCSSHG"
+    )
+
+
+@app.get("/members/activation-emails", response_class=HTMLResponse)
+def activation_emails_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, full_name, phone, email FROM members
+                   WHERE status = 'active' AND user_id IS NULL ORDER BY full_name"""
+            )
+            candidates = cur.fetchall()
+    finally:
+        conn.close()
+    eligible = [m for m in candidates if m["phone"] and m["email"]]
+    ineligible = [m for m in candidates if not (m["phone"] and m["email"])]
+    return templates.TemplateResponse(request, "activation_emails.html", {
+        "eligible": eligible, "ineligible": ineligible, "role": session_data["role"],
+    })
+
+
+@app.post("/members/send-activation-emails")
+async def send_activation_emails(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+do+this", status_code=303)
+    form = await request.form()
+    selected_ids = [int(v) for k, v in form.multi_items() if k == "member_ids"]
+    if not selected_ids:
+        return RedirectResponse(url="/members/activation-emails?error=Pick+at+least+one+member", status_code=303)
+
+    conn = get_conn()
+    sent, skipped = 0, []
+    try:
+        with conn.cursor() as cur:
+            for mid in selected_ids:
+                cur.execute("SELECT * FROM members WHERE id = %s", (mid,))
+                member = cur.fetchone()
+                if not member:
+                    continue
+                if member["user_id"]:
+                    skipped.append(f"{member['full_name']}: already has a login")
+                    continue
+                if not member["phone"] or not member["email"]:
+                    skipped.append(f"{member['full_name']}: missing phone or email")
+                    continue
+                cur.execute("SELECT id FROM users WHERE phone = %s", (member["phone"],))
+                if cur.fetchone():
+                    skipped.append(f"{member['full_name']}: phone already registered to another account")
+                    continue
+
+                cur.execute(
+                    "INSERT INTO users (phone, full_name, password_hash, role, email) "
+                    "VALUES (%s, %s, NULL, 'member', %s) RETURNING id",
+                    (member["phone"], member["full_name"], member["email"]),
+                )
+                user_id = cur.fetchone()["id"]
+                cur.execute("UPDATE members SET user_id = %s WHERE id = %s", (user_id, mid))
+
+                token = signer.dumps({"user_id": user_id, "purpose": "set_password"})
+                link = f"{SITE_URL}/set-password?token={token}"
+                body = render_activation_email_body(member["full_name"], link)
+                ok, err = send_email(member["email"], "Welcome to GCSSHG - activate your account", body)
+                if ok:
+                    sent += 1
+                else:
+                    skipped.append(f"{member['full_name']}: email failed ({err})")
+            conn.commit()
+    finally:
+        conn.close()
+
+    message = f"Sent to {sent} member(s)"
+    if skipped:
+        message += f" - {len(skipped)} skipped: {'; '.join(skipped[:5])}"
+        if len(skipped) > 5:
+            message += f" (+{len(skipped) - 5} more)"
+    return RedirectResponse(url=f"/members/activation-emails?{urlencode({'error': message})}", status_code=303)
+
+
+
 @app.post("/members/{member_id}/create-login")
 def create_member_login(member_id: int, phone: str = Form(...), session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
