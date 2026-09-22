@@ -16,7 +16,7 @@
 
 {% if not email_configured %}
 <div class="error">
-  Email isn't set up yet - the chairperson needs to set SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD
+  Email isn't set up yet - the chairperson needs to set BREVO_API_KEY and SMTP_FROM_EMAIL
   in the app's environment variables before this will actually send anything.
 </div>
 {% endif %}

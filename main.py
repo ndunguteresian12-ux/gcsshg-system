@@ -20,9 +20,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional, List
 from urllib.parse import urlencode, quote_plus
-import smtplib
-import ssl
-from email.mime.text import MIMEText
+import requests
 
 from dotenv import load_dotenv
 load_dotenv()  # reads .env in this folder so DATABASE_URL/SESSION_SECRET don't need manual `set`
@@ -54,6 +52,7 @@ SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USERNAME)
 SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "GCSSHG")
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 REMINDER_SECRET = os.environ.get("REMINDER_SECRET", "")
 signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
@@ -223,32 +222,45 @@ def compute_timely_payment_pct(all_loans, today):
 
 def send_email(to_email: str, subject: str, body_text: str) -> tuple:
     """
-    Sends a plain-text email via SMTP. Returns (success: bool, error_message: str|None).
-    Never raises - a misconfigured or failed send should degrade gracefully
-    rather than crash the request that triggered it. Every attempt is logged
-    (visible in Render's log output) so a failure can actually be diagnosed.
+    Sends a plain-text email via Brevo's HTTP API (not raw SMTP - Render's
+    free web services block outbound SMTP ports 25/465/587 entirely, but
+    regular HTTPS, which this uses, is never blocked).
+    Returns (success: bool, error_message: str|None). Never raises - a
+    misconfigured or failed send should degrade gracefully rather than
+    crash the request that triggered it. Every attempt is logged (visible
+    in Render's log output) so a failure can actually be diagnosed.
     """
-    if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD:
-        print(f"[EMAIL] Skipped - not configured. SMTP_HOST={'set' if SMTP_HOST else 'MISSING'}, "
-              f"SMTP_USERNAME={'set' if SMTP_USERNAME else 'MISSING'}, "
-              f"SMTP_PASSWORD={'set' if SMTP_PASSWORD else 'MISSING'}")
-        return False, "Email is not configured yet - set SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD."
+    if not BREVO_API_KEY:
+        print("[EMAIL] Skipped - BREVO_API_KEY is not set.")
+        return False, "Email is not configured yet - set BREVO_API_KEY."
+    if not SMTP_FROM_EMAIL:
+        print("[EMAIL] Skipped - no sender address configured (SMTP_FROM_EMAIL).")
+        return False, "No sender email configured - set SMTP_FROM_EMAIL."
     if not to_email:
         print("[EMAIL] Skipped - no recipient address given.")
         return False, "No email address on file."
     try:
-        msg = MIMEText(body_text, "plain", "utf-8")
-        msg["Subject"] = subject
-        msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
-        msg["To"] = to_email
-
-        context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.starttls(context=context)
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
-        print(f"[EMAIL] Sent OK to {to_email} - subject: {subject}")
-        return True, None
+        resp = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "accept": "application/json",
+                "api-key": BREVO_API_KEY,
+                "content-type": "application/json",
+            },
+            json={
+                "sender": {"name": SMTP_FROM_NAME, "email": SMTP_FROM_EMAIL},
+                "to": [{"email": to_email}],
+                "subject": subject,
+                "textContent": body_text,
+            },
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            print(f"[EMAIL] Sent OK to {to_email} - subject: {subject}")
+            return True, None
+        err = f"Brevo API error {resp.status_code}: {resp.text[:300]}"
+        print(f"[EMAIL] FAILED to {to_email} - {err}")
+        return False, err
     except Exception as e:
         print(f"[EMAIL] FAILED to {to_email} - subject: {subject} - error: {e!r}")
         return False, str(e)
@@ -1038,7 +1050,7 @@ def send_email_page(request: Request, session_data=Depends(get_session_optional)
             members = cur.fetchall()
     finally:
         conn.close()
-    email_configured = bool(SMTP_HOST and SMTP_USERNAME and SMTP_PASSWORD)
+    email_configured = bool(BREVO_API_KEY and SMTP_FROM_EMAIL)
     return templates.TemplateResponse(request, "send_email.html", {
         "members": members, "role": session_data["role"], "email_configured": email_configured,
     })
