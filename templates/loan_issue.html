@@ -26,7 +26,7 @@
     KES 20,000-{{ "{:,.0f}".format(high_loan_ceiling) }}: flat 10% total, 3 monthly installments.<br>
     Loans above {{ "{:,.0f}".format(high_loan_ceiling) }} still use the same 3-month terms but exceed the normal ceiling - a flag will show on the loan.
   </p>
-  <form method="post" action="/dashboard/issue-loan">
+  <form method="post" action="/loans/issue/review">
     <label for="member_search">Search member</label>
     <input type="text" id="member_search" placeholder="Type a name to filter the list below..." autocomplete="off">
 

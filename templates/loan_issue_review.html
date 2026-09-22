@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Review loan - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/loans/issue">&larr; Issue loan</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Review before issuing</h2>
+  <a href="/loans/issue" class="row-link">&larr; Start over</a>
+</div>
+
+<div class="card">
+  <h1 style="font-size:1.2rem; margin:0;">{{ borrower_name }}</h1>
+  <div class="muted">Requesting KES {{ "{:,.0f}".format(principal) }} on {{ issue_date_field }}</div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card solid-forest">
+    <div class="stat-label">Self-guarantee capacity</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(self_capacity) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Covered by own deposits</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(self_guarantee_amount) }}</div>
+  </div>
+  <div class="stat-card {{ 'solid-red' if remaining_needed > 0 else '' }}">
+    <div class="stat-label">Still needs guarantors</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(remaining_needed) }}</div>
+  </div>
+</div>
+
+{% if remaining_needed > 0 %}
+<div class="card">
+  <h2>Add guarantors to cover the remaining KES {{ "{:,.0f}".format(remaining_needed) }}</h2>
+  <p class="muted">
+    Each member below can guarantee up to their own available capacity (their deposits, minus their
+    own loan balance if any, minus what they're already guaranteeing elsewhere). Allocate enough
+    to reach the full loan amount before confirming.
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p style="color: var(--forest-dark); font-weight:600; margin:0;">
+    &#9989; Fully covered by {{ borrower_name.split(' ')[0] }}'s own deposits - no guarantors needed,
+    but you can still add some below if you'd like.
+  </p>
+</div>
+{% endif %}
+
+<div class="card">
+  <form method="post" action="/loans/issue/confirm">
+    <input type="hidden" name="member_id" value="{{ member_id }}">
+    <input type="hidden" name="principal" value="{{ principal }}">
+    <input type="hidden" name="issue_date_field" value="{{ issue_date_field }}">
+    <input type="hidden" name="interest_override_periods" value="{{ interest_override_periods }}">
+
+    {% if eligible_guarantors %}
+    <table>
+      <tr><th>Member</th><th class="figure-head">Available capacity</th><th>Amount to guarantee</th></tr>
+      {% for g in eligible_guarantors %}
+      <tr>
+        <td>{{ g.full_name }}</td>
+        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(g.capacity) }}</td>
+        <td>
+          <input type="number" name="guarantor_{{ g.id }}" min="0" max="{{ g.capacity }}" step="1"
+                 placeholder="0" style="width:110px; padding:0.3rem; text-align:right;">
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted">No other members currently have available capacity to guarantee a loan.</p>
+    {% endif %}
+
+    <button type="submit" style="margin-top:1rem;">Confirm and issue loan</button>
+  </form>
+</div>
+
+{% endblock %}

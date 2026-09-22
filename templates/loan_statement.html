@@ -79,6 +79,24 @@
 {% endif %}
 
 <div class="card">
+  <h2>Guarantee coverage</h2>
+  <p class="muted">Self-guaranteed by {{ loan.full_name.split(' ')[0] }}: KES {{ "{:,.0f}".format(self_guaranteed) }}</p>
+  {% if guarantors %}
+  <table>
+    <tr><th>Guarantor</th><th class="figure-head">Amount guaranteed</th></tr>
+    {% for g in guarantors %}
+    <tr>
+      <td>{{ g.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(g.amount_guaranteed) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">No other guarantors - fully covered by the borrower's own deposits.</p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Repayment history</h2>
   {% if repayments %}
   <table>
