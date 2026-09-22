@@ -20,6 +20,21 @@
   <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
 </div>
 
+{% if request.query_params.get('notice') %}
+<div class="error no-print" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">{{ request.query_params.get('notice') }}</div>
+{% endif %}
+
+<div class="card no-print">
+  <h2>Email this report</h2>
+  <form method="post" action="/reports/loans/email" style="display:flex; gap:0.6rem; align-items:flex-end; flex-wrap:wrap;">
+    <div style="flex:1; min-width:200px;">
+      <label for="recipient_email" style="margin:0 0 0.25rem;">Send to</label>
+      <input type="email" id="recipient_email" name="recipient_email" placeholder="name@example.com" required>
+    </div>
+    <button type="submit" class="btn-secondary" style="margin-top:0;">Send</button>
+  </form>
+</div>
+
 <div class="stat-grid">
   <div class="stat-card">
     <div class="stat-label">Total principal issued</div>

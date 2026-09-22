@@ -1183,6 +1183,110 @@ def render_ledger_as_text(member, entries):
     return "\n".join(lines)
 
 
+def build_member_statement_data(cur, member_id, today):
+    """
+    Same data a member's own /statement page shows - used both there and
+    by the email-this-statement route, so the two can never disagree.
+    """
+    cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+    member = cur.fetchone()
+    if not member:
+        return None
+
+    settings = get_settings(cur)
+    cur.execute(
+        "SELECT contribution_month, amount FROM contributions WHERE member_id = %s ORDER BY contribution_month",
+        (member_id,),
+    )
+    contributions = cur.fetchall()
+    total = sum((c["amount"] for c in contributions), Decimal("0"))
+
+    cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (member_id,))
+    loans = cur.fetchall()
+    repaid_map = get_repaid_map(cur)
+    loan_details = [build_loan_detail(cur, l, today, settings["penalty_amount"], repaid_map) for l in loans]
+
+    cur.execute(
+        "SELECT * FROM penalties WHERE member_id = %s ORDER BY waived ASC, created_at DESC", (member_id,)
+    )
+    penalties = cur.fetchall()
+    penalties_owed = sum((p["amount"] for p in penalties if not p["waived"] and not p["paid"]), Decimal("0"))
+
+    cur.execute(
+        """SELECT d.dividend_amount, d.total_contribution, r.fiscal_year_label, r.computed_at
+           FROM dividends d JOIN dividend_runs r ON r.id = d.dividend_run_id
+           WHERE d.member_id = %s ORDER BY r.computed_at DESC""",
+        (member_id,),
+    )
+    dividends = cur.fetchall()
+
+    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
+    group_total_contributions = cur.fetchone()["total"]
+
+    standing = compute_contribution_standing(cur, member_id, member["join_date"], settings["min_monthly_contribution"], today)
+
+    return {
+        "member": member, "contributions": contributions, "total": total,
+        "loans": loan_details, "penalties": penalties, "penalties_owed": penalties_owed,
+        "dividends": dividends, "group_total_contributions": group_total_contributions,
+        "standing": standing,
+    }
+
+
+def render_statement_as_text(data):
+    m = data["member"]
+    lines = [
+        f"GCSSHG - Statement for {m['full_name']}",
+        f"Member since {m['join_date']}",
+        "",
+        f"Your total contributed: KES {data['total']:,.2f}",
+        f"Group's total contributions: KES {data['group_total_contributions']:,.2f}",
+        "",
+        "CONTRIBUTION STANDING",
+    ]
+    s = data["standing"]
+    lines.append(f"  {s['months_elapsed']} month(s) elapsed x minimum = KES {s['expected_cumulative']:,.2f} expected by now")
+    lines.append(f"  Actual contributed: KES {s['actual_cumulative']:,.2f}")
+    lines.append("  Caught up - thank you!" if s["is_current"] else f"  Behind by KES {s['shortfall']:,.2f}")
+
+    lines += ["", "CONTRIBUTION HISTORY"]
+    if data["contributions"]:
+        for c in data["contributions"]:
+            lines.append(f"  {c['contribution_month'].strftime('%b %Y')}: KES {c['amount']:,.2f}")
+    else:
+        lines.append("  (none recorded yet)")
+
+    lines += ["", "LOANS"]
+    if data["loans"]:
+        for l in data["loans"]:
+            status = "overdue" if l["is_overdue"] else l["status"]
+            lines.append(
+                f"  Issued {l['issue_date']} - Principal KES {l['principal']:,.0f} - "
+                f"Balance KES {l['current_balance']:,.2f} - {status}"
+            )
+    else:
+        lines.append("  (none on record)")
+
+    lines += ["", "PENALTIES"]
+    lines.append(f"  Total outstanding: KES {data['penalties_owed']:,.2f}")
+    if data["penalties"]:
+        for p in data["penalties"]:
+            status = "paid" if p["paid"] else ("waived" if p["waived"] else "owed")
+            lines.append(f"  {p['period_label']} ({p['penalty_type'].replace('_',' ')}): KES {p['amount']:,.2f} - {status}")
+    else:
+        lines.append("  (none on record)")
+
+    lines += ["", "DIVIDEND HISTORY"]
+    if data["dividends"]:
+        for d in data["dividends"]:
+            lines.append(f"  {d['fiscal_year_label']}: KES {d['dividend_amount']:,.2f}")
+    else:
+        lines.append("  (none recorded yet)")
+
+    lines += ["", "- GCSSHG"]
+    return "\n".join(lines)
+
+
 @app.get("/reports/member-ledger", response_class=HTMLResponse)
 def member_ledger_report(request: Request, member_id: int, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
@@ -1257,7 +1361,56 @@ def contributions_report(request: Request, month: Optional[str] = None, year: Op
         conn.close()
     return templates.TemplateResponse(request, "report_contributions.html", {
         "rows": rows, "total": total, "period_label": period_label, "role": session_data["role"],
+        "month": month, "year": year,
     })
+
+
+@app.post("/reports/contributions/email")
+def email_contributions_report(recipient_email: str = Form(...), month: Optional[str] = Form(None),
+                                year: Optional[str] = Form(None), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if month:
+                month_date = f"{month}-01"
+                cur.execute(
+                    """SELECT m.full_name, COALESCE(c.amount, 0) as amount
+                       FROM members m LEFT JOIN contributions c
+                         ON c.member_id = m.id AND c.contribution_month = %s
+                       WHERE m.status = 'active' ORDER BY m.full_name""",
+                    (month_date,),
+                )
+                rows = cur.fetchall()
+                period_label = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
+            elif year:
+                cur.execute(
+                    """SELECT m.full_name, COALESCE(SUM(c.amount), 0) as amount
+                       FROM members m LEFT JOIN contributions c
+                         ON c.member_id = m.id AND EXTRACT(YEAR FROM c.contribution_month) = %s
+                       WHERE m.status = 'active' GROUP BY m.full_name ORDER BY m.full_name""",
+                    (year,),
+                )
+                rows = cur.fetchall()
+                period_label = str(year)
+            else:
+                return RedirectResponse(url="/reports?error=Pick+a+month+or+year", status_code=303)
+            total = sum((r["amount"] for r in rows), Decimal("0"))
+    finally:
+        conn.close()
+
+    lines = [f"GCSSHG - Contributions - {period_label}", ""]
+    for r in rows:
+        lines.append(f"  {r['full_name']:<30} KES {r['amount']:>12,.2f}")
+    lines += ["", f"TOTAL: KES {total:,.2f}", "", "- GCSSHG"]
+    body = "\n".join(lines)
+
+    ok, err = send_email(recipient_email, f"GCSSHG contributions - {period_label}", body)
+    qs = f"month={month}" if month else f"year={year}"
+    if ok:
+        return RedirectResponse(url=f"/reports/contributions?{qs}&notice={quote_plus('Emailed to ' + recipient_email)}", status_code=303)
+    return RedirectResponse(url=f"/reports/contributions?{qs}&notice={quote_plus('Failed to send: ' + (err or 'unknown error'))}", status_code=303)
 
 
 @app.get("/reports/loans", response_class=HTMLResponse)
@@ -1286,6 +1439,49 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
         "loans": loan_rows, "total_principal": total_principal, "total_interest": total_interest,
         "total_outstanding": total_outstanding, "role": session_data["role"],
     })
+
+
+@app.post("/reports/loans/email")
+def email_loans_report(recipient_email: str = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            repaid_map = get_repaid_map(cur)
+            cur.execute(
+                """SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id
+                   ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
+            )
+            loans = cur.fetchall()
+            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in loans]
+            total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
+            total_interest = sum(
+                (l["current_balance"] - l["principal"] + l["amount_repaid"] for l in loan_rows), Decimal("0")
+            )
+            total_outstanding = sum((l["current_balance"] for l in loan_rows if l["status"] == "active"), Decimal("0"))
+    finally:
+        conn.close()
+
+    lines = ["GCSSHG - All loans & interest", ""]
+    for l in loan_rows:
+        lines.append(
+            f"  {l['full_name']:<25} Issued {l['issue_date']} - Principal KES {l['principal']:>10,.0f} - "
+            f"Balance KES {l['current_balance']:>10,.2f} - {l['status']}"
+        )
+    lines += [
+        "", f"Total principal issued: KES {total_principal:,.2f}",
+        f"Total interest charged: KES {total_interest:,.2f}",
+        f"Currently outstanding: KES {total_outstanding:,.2f}",
+        "", "- GCSSHG",
+    ]
+    body = "\n".join(lines)
+
+    ok, err = send_email(recipient_email, "GCSSHG all loans & interest report", body)
+    if ok:
+        return RedirectResponse(url=f"/reports/loans?notice={quote_plus('Emailed to ' + recipient_email)}", status_code=303)
+    return RedirectResponse(url=f"/reports/loans?notice={quote_plus('Failed to send: ' + (err or 'unknown error'))}", status_code=303)
 
 
 @app.get("/black-records", response_class=HTMLResponse)
@@ -2781,3 +2977,25 @@ def statement_page(request: Request, member_id: Optional[int] = None,
         "standing": standing, "min_contribution": settings["min_monthly_contribution"],
         "role": session_data["role"],
     })
+
+
+@app.post("/statement/email")
+def email_statement(member_id: int = Form(...), recipient_email: str = Form(...),
+                     session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            data = build_member_statement_data(cur, member_id, date.today())
+    finally:
+        conn.close()
+    if not data:
+        return RedirectResponse(url="/members?error=Member+not+found", status_code=303)
+
+    body = render_statement_as_text(data)
+    ok, err = send_email(recipient_email, f"GCSSHG statement - {data['member']['full_name']}", body)
+    base = f"/statement?member_id={member_id}"
+    if ok:
+        return RedirectResponse(url=f"{base}&notice={quote_plus('Emailed to ' + recipient_email)}", status_code=303)
+    return RedirectResponse(url=f"{base}&notice={quote_plus('Failed to send: ' + (err or 'unknown error'))}", status_code=303)
