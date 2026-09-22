@@ -1435,12 +1435,15 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
     })
 
 
-@app.post("/admin/send-reminders")
+@app.api_route("/admin/send-reminders", methods=["GET", "POST"])
 def send_reminders_cron(secret: str = ""):
     """
-    Called by a scheduled Render Cron Job once a day, passing ?secret=...
-    matching REMINDER_SECRET. Not tied to a login session, since a cron
-    job can't log in - the shared secret is what protects this instead.
+    Called once a day by a scheduled external trigger (Render Cron Job, or
+    a free service like cron-job.org - which is why this accepts GET as
+    well as POST, since most free cron-ping tools only send GET), passing
+    ?secret=... matching REMINDER_SECRET. Not tied to a login session,
+    since an automated caller can't log in - the shared secret protects
+    this instead.
     """
     if not REMINDER_SECRET or secret != REMINDER_SECRET:
         raise HTTPException(status_code=403, detail="Invalid or missing secret")
