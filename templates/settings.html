@@ -50,14 +50,23 @@
 
     <h2 style="font-size:0.95rem; margin-top:1.4rem;">Dividend allocation</h2>
     <p class="muted" style="margin-top:-0.3rem;">
-      When you run a dividend payout, the total interest pool is split three ways: a cut for
-      administration, a cut for transaction costs, and the remainder paid out to members.
+      When you run a dividend payout, the total interest pool is split three ways: a cut for the
+      first category below, a cut for the second, and the remainder paid out to members. You can
+      rename either category to match how your group actually describes them.
     </p>
-    <label for="dividend_admin_percent">Administration (%)</label>
+    <label for="dividend_admin_label">First category name</label>
+    <input type="text" id="dividend_admin_label" name="dividend_admin_label"
+           value="{{ settings.dividend_admin_label }}" placeholder="Administration" required>
+
+    <label for="dividend_admin_percent">{{ settings.dividend_admin_label }} (%)</label>
     <input type="number" id="dividend_admin_percent" name="dividend_admin_percent" step="0.1" min="0" max="100"
            value="{{ settings.dividend_admin_percent }}" required>
 
-    <label for="dividend_transaction_percent">Transaction costs (%)</label>
+    <label for="dividend_transaction_label">Second category name</label>
+    <input type="text" id="dividend_transaction_label" name="dividend_transaction_label"
+           value="{{ settings.dividend_transaction_label }}" placeholder="Transaction costs" required>
+
+    <label for="dividend_transaction_percent">{{ settings.dividend_transaction_label }} (%)</label>
     <input type="number" id="dividend_transaction_percent" name="dividend_transaction_percent" step="0.1" min="0" max="100"
            value="{{ settings.dividend_transaction_percent }}" required>
 
@@ -70,6 +79,19 @@
   <p class="muted" style="margin-top:0.8rem;">
     Changes here only affect loans issued after saving - existing loans keep the terms they were issued under.
   </p>
+</div>
+
+<div class="card">
+  <h2>Automated reminders</h2>
+  <p class="muted">
+    A daily scheduled check (via Render Cron Job) emails members a loan payment reminder 3 days before
+    and on their loan's due date, and a monthly contribution reminder on the 10th to anyone short of
+    the minimum. Requires each member to have an email on file (Members &rarr; Edit), and email to be
+    configured (Send Email page shows whether it's set up).
+  </p>
+  <form method="post" action="/settings/run-reminders-now">
+    <button type="submit" class="btn-secondary">Run reminder check now (test)</button>
+  </form>
 </div>
 
 {% endblock %}

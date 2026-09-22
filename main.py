@@ -54,6 +54,7 @@ SMTP_USERNAME = os.environ.get("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 SMTP_FROM_EMAIL = os.environ.get("SMTP_FROM_EMAIL", SMTP_USERNAME)
 SMTP_FROM_NAME = os.environ.get("SMTP_FROM_NAME", "GCSSHG")
+REMINDER_SECRET = os.environ.get("REMINDER_SECRET", "")
 signer = itsdangerous.URLSafeTimedSerializer(SECRET_KEY)
 
 app = FastAPI(title="GCSSHG Management System")
@@ -224,11 +225,16 @@ def send_email(to_email: str, subject: str, body_text: str) -> tuple:
     """
     Sends a plain-text email via SMTP. Returns (success: bool, error_message: str|None).
     Never raises - a misconfigured or failed send should degrade gracefully
-    rather than crash the request that triggered it.
+    rather than crash the request that triggered it. Every attempt is logged
+    (visible in Render's log output) so a failure can actually be diagnosed.
     """
     if not SMTP_HOST or not SMTP_USERNAME or not SMTP_PASSWORD:
+        print(f"[EMAIL] Skipped - not configured. SMTP_HOST={'set' if SMTP_HOST else 'MISSING'}, "
+              f"SMTP_USERNAME={'set' if SMTP_USERNAME else 'MISSING'}, "
+              f"SMTP_PASSWORD={'set' if SMTP_PASSWORD else 'MISSING'}")
         return False, "Email is not configured yet - set SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD."
     if not to_email:
+        print("[EMAIL] Skipped - no recipient address given.")
         return False, "No email address on file."
     try:
         msg = MIMEText(body_text, "plain", "utf-8")
@@ -241,9 +247,100 @@ def send_email(to_email: str, subject: str, body_text: str) -> tuple:
             server.starttls(context=context)
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        print(f"[EMAIL] Sent OK to {to_email} - subject: {subject}")
         return True, None
     except Exception as e:
+        print(f"[EMAIL] FAILED to {to_email} - subject: {subject} - error: {e!r}")
         return False, str(e)
+
+
+LOAN_REMINDER_ADVANCE_DAYS = 3
+CONTRIBUTION_REMINDER_DAY = 10  # of each month
+
+
+def run_reminder_checks(cur, today):
+    """
+    Sends loan-due-date reminders (3 days before, and on the day itself)
+    and a monthly contribution reminder (on the 10th, to anyone short of
+    their minimum for the current month). Every send is logged in
+    reminders_sent so re-running this on the same day never double-sends -
+    safe to call repeatedly, whether from the daily cron trigger or a
+    manual "test now" click.
+    """
+    settings = get_settings(cur)
+    loan_reminders_sent = 0
+    contribution_reminders_sent = 0
+
+    # --- Loan due-date reminders ---
+    cur.execute(
+        """SELECT l.*, m.full_name, m.email FROM loans l
+           JOIN members m ON m.id = l.member_id
+           WHERE l.status = 'active' AND l.due_date IS NOT NULL AND m.email IS NOT NULL"""
+    )
+    active_loans = cur.fetchall()
+    repaid_map = get_repaid_map(cur)
+    for loan in active_loans:
+        days_until_due = (loan["due_date"] - today).days
+        if days_until_due not in (LOAN_REMINDER_ADVANCE_DAYS, 0):
+            continue
+        detail = build_loan_detail(cur, loan, today, settings["penalty_amount"], repaid_map)
+        if detail["current_balance"] <= 0:
+            continue
+        reminder_type = "loan_due_today" if days_until_due == 0 else "loan_due_advance"
+        period_label = str(loan["due_date"])
+        cur.execute(
+            """INSERT INTO reminders_sent (member_id, reminder_type, reference_id, period_label)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (member_id, reminder_type, reference_id, period_label) DO NOTHING
+               RETURNING id""",
+            (loan["member_id"], reminder_type, loan["id"], period_label),
+        )
+        if cur.fetchone():
+            when = "is due today" if days_until_due == 0 else f"is due in {LOAN_REMINDER_ADVANCE_DAYS} days ({loan['due_date']})"
+            body = (
+                f"Hello {loan['full_name']},\n\n"
+                f"This is a reminder that your loan of KES {loan['principal']:,.0f} {when}.\n"
+                f"Current balance: KES {detail['current_balance']:,.2f}.\n\n"
+                f"Please arrange repayment with your treasurer.\n\n- GCSSHG"
+            )
+            ok, _ = send_email(loan["email"], "GCSSHG loan payment reminder", body)
+            if ok:
+                loan_reminders_sent += 1
+
+    # --- Monthly contribution reminder (10th of the month) ---
+    if today.day == CONTRIBUTION_REMINDER_DAY:
+        current_month = today.replace(day=1)
+        cur.execute("SELECT id, full_name, email FROM members WHERE status = 'active' AND email IS NOT NULL")
+        for m in cur.fetchall():
+            cur.execute(
+                "SELECT COALESCE(SUM(amount),0) as total FROM contributions "
+                "WHERE member_id = %s AND contribution_month = %s",
+                (m["id"], current_month),
+            )
+            total = cur.fetchone()["total"]
+            if total >= settings["min_monthly_contribution"]:
+                continue
+            period_label = f"{today.year}-{today.month:02d}"
+            cur.execute(
+                """INSERT INTO reminders_sent (member_id, reminder_type, reference_id, period_label)
+                   VALUES (%s, 'contribution_due', NULL, %s)
+                   ON CONFLICT (member_id, reminder_type, reference_id, period_label) DO NOTHING
+                   RETURNING id""",
+                (m["id"], period_label),
+            )
+            if cur.fetchone():
+                body = (
+                    f"Hello {m['full_name']},\n\n"
+                    f"This is a reminder that your GCSSHG contribution of at least "
+                    f"KES {settings['min_monthly_contribution']:,.0f} for {current_month.strftime('%B %Y')} "
+                    f"hasn't been recorded yet.\n\n"
+                    f"Please make your contribution as soon as you can.\n\n- GCSSHG"
+                )
+                ok, _ = send_email(m["email"], "GCSSHG monthly contribution reminder", body)
+                if ok:
+                    contribution_reminders_sent += 1
+
+    return loan_reminders_sent, contribution_reminders_sent
 
 
 def time_greeting():
@@ -961,7 +1058,7 @@ async def send_email_submit(request: Request, session_data=Depends(get_session_o
         return RedirectResponse(url="/send-email?error=Subject+and+message+are+both+required", status_code=303)
 
     conn = get_conn()
-    sent, skipped_no_email = 0, 0
+    sent, skipped_no_email, failures = 0, 0, []
     try:
         with conn.cursor() as cur:
             if send_to_all:
@@ -984,14 +1081,18 @@ async def send_email_submit(request: Request, session_data=Depends(get_session_o
                 if ok:
                     sent += 1
                 else:
-                    skipped_no_email += 1
+                    failures.append(f"{m['full_name']}: {err}")
     finally:
         conn.close()
 
-    message = f"Sent+to+{sent}+member(s)"
+    message = f"Sent to {sent} member(s)"
     if skipped_no_email:
-        message += f"+-+{skipped_no_email}+skipped+(no+email+on+file+or+send+failed)"
-    return RedirectResponse(url=f"/send-email?success={message}", status_code=303)
+        message += f" - {skipped_no_email} skipped (no email on file)"
+    if failures:
+        message += f" - failed: {'; '.join(failures[:3])}"
+        if len(failures) > 3:
+            message += f" (+{len(failures) - 3} more)"
+    return RedirectResponse(url=f"/send-email?{urlencode({'success': message})}", status_code=303)
 
 
 @app.get("/reports", response_class=HTMLResponse)
@@ -1009,74 +1110,103 @@ def reports_page(request: Request, session_data=Depends(get_session_optional)):
 
 
 @app.get("/reports/member-ledger", response_class=HTMLResponse)
+def build_member_ledger(cur, member_id):
+    """Shared by the ledger page and the email-this-ledger route, so both always agree."""
+    cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
+    member = cur.fetchone()
+    if not member:
+        return None, []
+
+    entries = []
+    cur.execute(
+        "SELECT contribution_month, amount, recorded_at FROM contributions WHERE member_id = %s",
+        (member_id,),
+    )
+    for c in cur.fetchall():
+        entries.append({"date": c["contribution_month"], "type": "Contribution", "detail": "", "amount": c["amount"]})
+
+    cur.execute("SELECT * FROM loans WHERE member_id = %s", (member_id,))
+    for l in cur.fetchall():
+        entries.append({
+            "date": l["issue_date"], "type": "Loan issued",
+            "detail": f"Loan #{l['id']} - {l['interest_rate']}%/{l['period_months']}mo", "amount": l["principal"],
+        })
+        cur.execute("SELECT payment_date, amount FROM loan_repayments WHERE loan_id = %s", (l["id"],))
+        for r in cur.fetchall():
+            entries.append({"date": r["payment_date"], "type": "Loan repayment", "detail": f"Loan #{l['id']}", "amount": r["amount"]})
+
+    cur.execute(
+        "SELECT penalty_type, period_label, amount, waived, paid, created_at FROM penalties WHERE member_id = %s",
+        (member_id,),
+    )
+    for p in cur.fetchall():
+        status = "waived" if p["waived"] else ("paid" if p["paid"] else "owed")
+        entries.append({
+            "date": p["created_at"].date(), "type": "Penalty",
+            "detail": f"{p['penalty_type'].replace('_', ' ')} ({p['period_label']}) - {status}", "amount": p["amount"],
+        })
+
+    cur.execute(
+        """SELECT d.dividend_amount, r.fiscal_year_label, r.computed_at FROM dividends d
+           JOIN dividend_runs r ON r.id = d.dividend_run_id WHERE d.member_id = %s""",
+        (member_id,),
+    )
+    for d in cur.fetchall():
+        entries.append({"date": d["computed_at"].date(), "type": "Dividend", "detail": d["fiscal_year_label"], "amount": d["dividend_amount"]})
+
+    entries.sort(key=lambda e: e["date"])
+    return member, entries
+
+
+def render_ledger_as_text(member, entries):
+    lines = [
+        f"GCSSHG - Full transaction ledger for {member['full_name']}",
+        f"Member since {member['join_date']}",
+        "",
+        f"{'Date':<12} {'Type':<16} {'Detail':<35} {'Amount':>12}",
+        "-" * 78,
+    ]
+    for e in entries:
+        lines.append(f"{e['date'].strftime('%d %b %Y'):<12} {e['type']:<16} {e['detail'][:35]:<35} {e['amount']:>12,.2f}")
+    return "\n".join(lines)
+
+
+@app.get("/reports/member-ledger", response_class=HTMLResponse)
 def member_ledger_report(request: Request, member_id: int, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
         return RedirectResponse(url="/login")
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
-            member = cur.fetchone()
+            member, entries = build_member_ledger(cur, member_id)
             if not member:
                 return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Member not found.</p>")
-
-            entries = []
-
-            cur.execute(
-                "SELECT contribution_month, amount, recorded_at FROM contributions WHERE member_id = %s",
-                (member_id,),
-            )
-            for c in cur.fetchall():
-                entries.append({
-                    "date": c["contribution_month"], "type": "Contribution",
-                    "detail": "", "amount": c["amount"],
-                })
-
-            cur.execute("SELECT * FROM loans WHERE member_id = %s", (member_id,))
-            member_loans = cur.fetchall()
-            for l in member_loans:
-                entries.append({
-                    "date": l["issue_date"], "type": "Loan issued",
-                    "detail": f"Loan #{l['id']} - {l['interest_rate']}%/{l['period_months']}mo", "amount": l["principal"],
-                })
-                cur.execute(
-                    "SELECT payment_date, amount FROM loan_repayments WHERE loan_id = %s", (l["id"],)
-                )
-                for r in cur.fetchall():
-                    entries.append({
-                        "date": r["payment_date"], "type": "Loan repayment",
-                        "detail": f"Loan #{l['id']}", "amount": r["amount"],
-                    })
-
-            cur.execute(
-                "SELECT penalty_type, period_label, amount, waived, paid, created_at FROM penalties WHERE member_id = %s",
-                (member_id,),
-            )
-            for p in cur.fetchall():
-                status = "waived" if p["waived"] else ("paid" if p["paid"] else "owed")
-                entries.append({
-                    "date": p["created_at"].date(), "type": "Penalty",
-                    "detail": f"{p['penalty_type'].replace('_', ' ')} ({p['period_label']}) - {status}",
-                    "amount": p["amount"],
-                })
-
-            cur.execute(
-                """SELECT d.dividend_amount, r.fiscal_year_label, r.computed_at FROM dividends d
-                   JOIN dividend_runs r ON r.id = d.dividend_run_id WHERE d.member_id = %s""",
-                (member_id,),
-            )
-            for d in cur.fetchall():
-                entries.append({
-                    "date": d["computed_at"].date(), "type": "Dividend",
-                    "detail": d["fiscal_year_label"], "amount": d["dividend_amount"],
-                })
-
-            entries.sort(key=lambda e: e["date"])
     finally:
         conn.close()
     return templates.TemplateResponse(request, "member_ledger.html", {
         "member": member, "entries": entries, "role": session_data["role"],
     })
+
+
+@app.post("/reports/member-ledger/email")
+def email_member_ledger(member_id: int = Form(...), recipient_email: str = Form(...),
+                         session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            member, entries = build_member_ledger(cur, member_id)
+    finally:
+        conn.close()
+    if not member:
+        return RedirectResponse(url="/reports?error=Member+not+found", status_code=303)
+
+    body = render_ledger_as_text(member, entries)
+    ok, err = send_email(recipient_email, f"GCSSHG ledger - {member['full_name']}", body)
+    if ok:
+        return RedirectResponse(url=f"/reports/member-ledger?member_id={member_id}&error=Emailed+to+{quote_plus(recipient_email)}", status_code=303)
+    return RedirectResponse(url=f"/reports/member-ledger?member_id={member_id}&error=Failed+to+send:+{quote_plus(err or 'unknown error')}", status_code=303)
 
 
 @app.get("/reports/contributions", response_class=HTMLResponse)
@@ -1303,6 +1433,43 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
         "issues": issues, "error_count": error_count, "warning_count": warning_count,
         "role": session_data["role"],
     })
+
+
+@app.post("/admin/send-reminders")
+def send_reminders_cron(secret: str = ""):
+    """
+    Called by a scheduled Render Cron Job once a day, passing ?secret=...
+    matching REMINDER_SECRET. Not tied to a login session, since a cron
+    job can't log in - the shared secret is what protects this instead.
+    """
+    if not REMINDER_SECRET or secret != REMINDER_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid or missing secret")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            loan_count, contribution_count = run_reminder_checks(cur, date.today())
+            conn.commit()
+    finally:
+        conn.close()
+    return {"loan_reminders_sent": loan_count, "contribution_reminders_sent": contribution_count}
+
+
+@app.post("/settings/run-reminders-now")
+def run_reminders_manual(session_data=Depends(get_session_optional)):
+    """Lets the chairperson test the reminder check on demand, without waiting for the cron job."""
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/settings?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            loan_count, contribution_count = run_reminder_checks(cur, date.today())
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(
+        url=f"/settings?error=Sent+{loan_count}+loan+reminder(s)+and+{contribution_count}+contribution+reminder(s)",
+        status_code=303,
+    )
 
 
 @app.get("/health")
