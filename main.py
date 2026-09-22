@@ -1998,14 +1998,13 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/loans?error=Only+the+chairperson+or+treasurer+can+record+repayments", status_code=303)
     form = await request.form()
-    payment_date_field = form.get("payment_date_field", "").strip()
-    if not payment_date_field:
-        return RedirectResponse(url="/loans?error=Pick+a+payment+date", status_code=303)
-    payment_date = date.fromisoformat(payment_date_field)
+    default_date_field = form.get("payment_date_field", "").strip()
+    default_date = date.fromisoformat(default_date_field) if default_date_field else None
     search_query = form.get("search_query", "")
 
     conn = get_conn()
     saved = 0
+    skipped_no_date = 0
     try:
         with conn.cursor() as cur:
             for key, value in form.multi_items():
@@ -2018,6 +2017,18 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
                 if amount_dec <= 0:
                     continue
                 loan_id = int(key.replace("amount_", ""))
+
+                # Each row can carry its own date (date_<loan_id>) - falls back
+                # to the shared default date field if the row didn't set one.
+                row_date_field = form.get(f"date_{loan_id}", "").strip()
+                if row_date_field:
+                    payment_date = date.fromisoformat(row_date_field)
+                elif default_date:
+                    payment_date = default_date
+                else:
+                    skipped_no_date += 1
+                    continue
+
                 cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
                 loan = cur.fetchone()
                 if not loan:
@@ -2033,6 +2044,8 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
         conn.close()
 
     message = f"{saved}+repayment(s)+recorded"
+    if skipped_no_date:
+        message += f"+-+{skipped_no_date}+skipped+(no+date+given)"
     redirect_url = f"/loans?success={message}"
     if search_query:
         redirect_url += f"&q={quote_plus(search_query)}"

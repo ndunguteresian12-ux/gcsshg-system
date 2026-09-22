@@ -83,13 +83,15 @@
     {% if role in ['chairperson', 'treasurer'] %}
     <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:0.5rem; flex-wrap:wrap;">
       <div>
-        <label for="payment_date_field" style="margin:0 0 0.25rem;">Payment date (applies to all entries below)</label>
-        <input type="date" id="payment_date_field" name="payment_date_field" required style="width:auto;">
+        <label for="payment_date_field" style="margin:0 0 0.25rem;">Default date (fills in blank dates below)</label>
+        <input type="date" id="payment_date_field" name="payment_date_field" style="width:auto;">
       </div>
       <button type="submit" class="btn" style="width:auto; margin-top:0;">Save all repayments</button>
     </div>
     <p class="muted" style="margin-bottom:1rem;">
-      Paying more than a loan's balance automatically rolls the extra onto that member's other active loans, oldest due date first.
+      Each loan below has its own date field - set the default above to fill them all in at once, or set
+      a different date per row if members paid on different days. Paying more than a loan's balance
+      automatically rolls the extra onto that member's other active loans, oldest due date first.
     </p>
     {% endif %}
 
@@ -98,7 +100,7 @@
         <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
         <th>Rate</th><th class="figure-head">Paid</th><th class="figure-head">Balance</th>
         <th class="figure-head">Penalty</th><th>Status</th>
-        {% if role in ['chairperson', 'treasurer'] %}<th>Amount to pay</th>{% endif %}
+        {% if role in ['chairperson', 'treasurer'] %}<th>Amount to pay</th><th>Date</th>{% endif %}
         <th></th>
       </tr>
       {% for l in loans %}
@@ -131,6 +133,11 @@
                  placeholder="0" style="width:100px; padding:0.35rem; text-align:right;">
           {% endif %}
         </td>
+        <td>
+          {% if l.status == 'active' %}
+          <input type="date" name="date_{{ l.id }}" class="row-date-field" style="width:150px; padding:0.35rem;">
+          {% endif %}
+        </td>
         {% endif %}
         <td style="white-space:nowrap;">
           {% if role == 'chairperson' %}
@@ -154,7 +161,7 @@
         <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(total_repaid) }}</td>
         <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_outstanding) }}</td>
         <td></td><td></td>
-        {% if role in ['chairperson', 'treasurer'] %}<td></td>{% endif %}
+        {% if role in ['chairperson', 'treasurer'] %}<td></td><td></td>{% endif %}
         <td></td>
       </tr>
     </table>
@@ -170,5 +177,17 @@
   </p>
   {% endif %}
 </div>
+
+<script>
+(function() {
+  const defaultField = document.getElementById('payment_date_field');
+  if (!defaultField) return;
+  defaultField.addEventListener('change', function() {
+    document.querySelectorAll('.row-date-field').forEach(function(el) {
+      if (!el.value) el.value = defaultField.value;
+    });
+  });
+})();
+</script>
 
 {% endblock %}
