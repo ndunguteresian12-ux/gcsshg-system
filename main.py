@@ -3457,6 +3457,25 @@ def add_contribution_form(member_id: int = Form(...), contribution_month: str = 
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
+@app.post("/contributions/{contribution_id}/delete")
+def delete_contribution(contribution_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/members?error=Only+the+chairperson+can+delete+a+contribution", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT member_id FROM contributions WHERE id = %s", (contribution_id,))
+            row = cur.fetchone()
+            if not row:
+                return RedirectResponse(url="/members?error=Contribution+not+found", status_code=303)
+            member_id = row["member_id"]
+            cur.execute("DELETE FROM contributions WHERE id = %s", (contribution_id,))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/statement?member_id={member_id}&notice=Contribution+deleted", status_code=303)
+
+
 @app.get("/statement", response_class=HTMLResponse)
 def statement_page(request: Request, member_id: Optional[int] = None,
                     session_data=Depends(get_session_optional)):
@@ -3487,7 +3506,7 @@ def statement_page(request: Request, member_id: Optional[int] = None,
                 raise HTTPException(status_code=404, detail="Member not found")
 
             cur.execute(
-                "SELECT contribution_month, amount FROM contributions "
+                "SELECT id, contribution_month, amount FROM contributions "
                 "WHERE member_id = %s ORDER BY contribution_month", (mid,)
             )
             contributions = cur.fetchall()

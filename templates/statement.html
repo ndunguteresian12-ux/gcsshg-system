@@ -103,9 +103,21 @@
   <h2>Contribution history</h2>
   {% if contributions %}
   <table>
-    <tr><th>Month</th><th class="figure-head">Amount</th></tr>
+    <tr><th>Month</th><th class="figure-head">Amount</th>{% if role == 'chairperson' %}<th></th>{% endif %}</tr>
     {% for c in contributions %}
-    <tr><td>{{ c.contribution_month.strftime('%b %Y') }}</td><td class="figure" style="text-align:right;">{{ "{:,.0f}".format(c.amount) }}</td></tr>
+    <tr>
+      <td>{{ c.contribution_month.strftime('%b %Y') }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(c.amount) }}</td>
+      {% if role == 'chairperson' %}
+      <td>
+        <form method="post" action="/contributions/{{ c.id }}/delete"
+              onsubmit="return confirm('Delete this contribution of KES {{ '{:,.0f}'.format(c.amount) }} for {{ c.contribution_month.strftime('%b %Y') }}? This cannot be undone.');"
+              style="margin:0;">
+          <button type="submit" class="btn-secondary no-print" style="margin:0; padding:0.25rem 0.5rem; font-size:0.75rem; width:auto;">Delete</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
     {% endfor %}
   </table>
   {% else %}
