@@ -1162,7 +1162,6 @@ def reports_page(request: Request, session_data=Depends(get_session_optional)):
     return templates.TemplateResponse(request, "reports.html", {"role": session_data["role"], "members": members})
 
 
-@app.get("/reports/member-ledger", response_class=HTMLResponse)
 def build_member_ledger(cur, member_id):
     """Shared by the ledger page and the email-this-ledger route, so both always agree."""
     cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))
