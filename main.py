@@ -1624,7 +1624,14 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
             for loan in all_loans:
                 detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map)
                 balance = detail["current_balance"]
-                if loan["status"] == "cleared" and balance > Decimal("0.01"):
+                if balance < Decimal("-0.01"):
+                    issues.append({
+                        "severity": "error",
+                        "category": "Loan overpaid - excess should be reallocated",
+                        "detail": f"{loan['full_name']}: loan #{loan['id']} is overpaid by {abs(balance):,.2f}",
+                        "loan_id": loan["id"], "reallocate": True,
+                    })
+                elif loan["status"] == "cleared" and balance > Decimal("0.01"):
                     issues.append({
                         "severity": "error",
                         "category": "Cleared loan with outstanding balance",
@@ -1632,10 +1639,10 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
                                   f"balance of {balance:,.2f}",
                         "loan_id": loan["id"],
                     })
-                if loan["status"] == "active" and balance <= 0:
+                elif loan["status"] == "active" and balance <= 0:
                     issues.append({
                         "severity": "warning",
-                        "category": "Active loan with zero/negative balance",
+                        "category": "Active loan with zero balance",
                         "detail": f"{loan['full_name']}: loan #{loan['id']} is still marked active but its "
                                   f"balance is {balance:,.2f} - likely should be cleared",
                         "loan_id": loan["id"],
@@ -1724,6 +1731,56 @@ def run_reminders_manual(session_data=Depends(get_session_optional)):
         url=f"/settings?error=Sent+{loan_count}+loan+reminder(s)+and+{contribution_count}+contribution+reminder(s)",
         status_code=303,
     )
+
+
+@app.get("/loans/{loan_id}/reallocate", response_class=HTMLResponse)
+def reallocate_overpayment_page(loan_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/audit?error=Only+the+chairperson+can+reallocate+an+overpayment", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            cur.execute(
+                "SELECT l.*, m.full_name FROM loans l JOIN members m ON m.id = l.member_id WHERE l.id = %s",
+                (loan_id,),
+            )
+            loan = cur.fetchone()
+            if not loan:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
+            detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+            excess = abs(min(detail["current_balance"], Decimal("0")))
+
+            cur.execute(
+                "SELECT * FROM loans WHERE member_id = %s AND status = 'active' AND id != %s ORDER BY due_date ASC",
+                (loan["member_id"], loan_id),
+            )
+            other_loans_raw = cur.fetchall()
+            other_loans = []
+            for ol in other_loans_raw:
+                od = build_loan_detail(cur, ol, date.today(), settings["penalty_amount"])
+                if od["current_balance"] > 0:
+                    other_loans.append(od)
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "loan_reallocate.html", {
+        "loan": detail, "excess": excess, "other_loans": other_loans, "role": session_data["role"],
+    })
+
+
+@app.post("/loans/{loan_id}/reallocate")
+def reallocate_overpayment_confirm(loan_id: int, target_loan_id: int = Form(...),
+                                    amount: float = Form(...), session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/audit?error=Only+the+chairperson+can+reallocate+an+overpayment", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            reallocate_overpayment(cur, loan_id, target_loan_id, Decimal(str(amount)), session_data["user_id"])
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/audit?error=Overpayment+reallocated", status_code=303)
 
 
 @app.get("/health")
@@ -2510,6 +2567,110 @@ def get_loan_balance(cur, loan, as_of):
     terms = terms_from_loan_row(loan)
     override = loan.get("interest_override_periods")
     return loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
+
+
+def reallocate_overpayment(cur, from_loan_id, to_loan_id, amount, recorded_by):
+    """
+    Moves an overpayment from one loan to another, keeping a full audit
+    trail: the original overpayment stays visible, paired with a negative
+    correction entry showing exactly where the excess went and a matching
+    positive entry on the loan it landed on.
+    """
+    today = date.today()
+    cur.execute(
+        """INSERT INTO loan_repayments (loan_id, payment_date, amount, principal_component, interest_component, recorded_by)
+           VALUES (%s, %s, %s, %s, 0, %s)""",
+        (from_loan_id, today, -amount, -amount, recorded_by),
+    )
+    cur.execute("SELECT * FROM loans WHERE id = %s", (to_loan_id,))
+    to_loan = cur.fetchone()
+    apply_loan_repayment(cur, to_loan, amount, today, recorded_by)
+
+    # If the correction brought the source loan's balance back to exactly
+    # zero and it had been marked cleared while overpaid, its status is
+    # already correct; if it was active and is now settled, mark it cleared.
+    cur.execute("SELECT * FROM loans WHERE id = %s", (from_loan_id,))
+    from_loan = cur.fetchone()
+    new_balance = get_loan_balance(cur, from_loan, today)
+    if from_loan["status"] == "active" and new_balance <= 0:
+        cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s", (today, from_loan_id))
+
+
+def fix_negative_balance_loan(cur, loan_id, recorded_by, penalty_amount):
+    """
+    If this loan's balance is already negative (overpaid, from before the
+    overflow-cascade fix existed), moves the excess onto the same member's
+    other active loans - oldest due date first - by trimming back the most
+    recent repayment(s) on this loan that caused the overpayment and
+    recording that same amount as a fresh repayment on the destination
+    loan(s), dated the same as the trimmed repayment. Returns the amount
+    actually moved (0 if there was nothing to fix).
+    """
+    cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+    loan = cur.fetchone()
+    if not loan:
+        return Decimal("0")
+
+    balance = get_loan_balance(cur, loan, date.today())
+    if balance >= 0:
+        return Decimal("0")
+    excess = -balance
+
+    # Trim back the most recent repayment(s) on this loan until the excess
+    # is fully accounted for, remembering the date(s) it came from.
+    cur.execute(
+        "SELECT * FROM loan_repayments WHERE loan_id = %s ORDER BY payment_date DESC, id DESC",
+        (loan_id,),
+    )
+    repayments = cur.fetchall()
+    remaining_to_trim = excess
+    trimmed_batches = []  # list of (amount, payment_date)
+    for r in repayments:
+        if remaining_to_trim <= 0:
+            break
+        trim_amount = min(remaining_to_trim, r["amount"])
+        trimmed_batches.append((trim_amount, r["payment_date"]))
+        if trim_amount == r["amount"]:
+            cur.execute("DELETE FROM loan_repayments WHERE id = %s", (r["id"],))
+        else:
+            ratio = (r["amount"] - trim_amount) / r["amount"]
+            new_principal = (r["principal_component"] * ratio).quantize(Decimal("0.01"))
+            new_interest = (r["amount"] - trim_amount) - new_principal
+            cur.execute(
+                "UPDATE loan_repayments SET amount = %s, principal_component = %s, interest_component = %s WHERE id = %s",
+                (r["amount"] - trim_amount, new_principal, new_interest, r["id"]),
+            )
+        remaining_to_trim -= trim_amount
+
+    moved_total = excess - remaining_to_trim
+    if moved_total <= 0:
+        return Decimal("0")
+
+    # Reflect the trim on the source loan (auto-restores 'active' status if
+    # it had been incorrectly marked cleared while overpaid).
+    new_balance = get_loan_balance(cur, loan, date.today())
+    if new_balance > 0 and loan["status"] == "cleared":
+        cur.execute("UPDATE loans SET status = 'active', cleared_date = NULL WHERE id = %s", (loan_id,))
+
+    # Apply the moved amount to the member's other active loans, oldest due first.
+    cur.execute(
+        "SELECT * FROM loans WHERE member_id = %s AND status = 'active' AND id != %s ORDER BY due_date ASC",
+        (loan["member_id"], loan_id),
+    )
+    other_loans = cur.fetchall()
+    remaining = moved_total
+    move_date = trimmed_batches[0][1] if trimmed_batches else date.today()
+    for other in other_loans:
+        if remaining <= 0:
+            break
+        other_balance = get_loan_balance(cur, other, move_date)
+        if other_balance <= 0:
+            continue
+        pay_amount = min(remaining, other_balance)
+        apply_loan_repayment(cur, other, pay_amount, move_date, recorded_by)
+        remaining -= pay_amount
+
+    return moved_total - remaining
 
 
 def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, recorded_by, exclude_loan_ids=None):

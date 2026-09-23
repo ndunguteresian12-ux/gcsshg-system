@@ -44,6 +44,7 @@
       <td>{{ i.category }}</td>
       <td>{{ i.detail }}</td>
       <td>
+        {% if i.reallocate %}<a class="row-link" href="/loans/{{ i.loan_id }}/reallocate" style="font-weight:600;">Fix &rarr;</a><br>{% endif %}
         {% if i.loan_id %}<a class="row-link" href="/loans/{{ i.loan_id }}/statement">View loan &rarr;</a>{% endif %}
         {% if i.member_id %}<a class="row-link" href="/statement?member_id={{ i.member_id }}">View statement &rarr;</a>{% endif %}
       </td>

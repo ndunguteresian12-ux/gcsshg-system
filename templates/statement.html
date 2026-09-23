@@ -134,9 +134,10 @@
         </span>
       </td>
       <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
+      <td class="figure" style="text-align:right; {{ 'color: var(--red); font-weight:700;' if l.current_balance < 0 else '' }}">{{ "{:,.0f}".format(l.current_balance) }}</td>
       <td>
-        {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
+        {% if l.current_balance < 0 %}<span style="color: var(--red); font-weight:700;">overpaid</span>
+        {% elif l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
         {% else %}{{ l.status }}{% endif %}
       </td>
     </tr>

@@ -33,13 +33,17 @@
     <div class="stat-label">Principal</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(loan.principal) }}</div>
   </div>
-  <div class="stat-card">
-    <div class="stat-label">Balance</div>
-    <div class="stat-value figure">{{ "{:,.0f}".format(loan.current_balance) }}</div>
+  <div class="stat-card" style="background:#C08829; border:none;">
+    <div class="stat-label" style="color: rgba(255,255,255,0.85);">Interest</div>
+    <div class="stat-value figure" style="color:white;">{{ "{:,.0f}".format(loan.current_balance - loan.principal + loan.amount_repaid) }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Repaid</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(loan.amount_repaid) }}</div>
+  </div>
+  <div class="stat-card {{ 'solid-red' if loan.current_balance < 0 else '' }}">
+    <div class="stat-label">{{ "Overpaid by" if loan.current_balance < 0 else "Balance" }}</div>
+    <div class="stat-value figure">{{ "{:,.2f}".format(loan.current_balance|abs) }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Penalty owed</div>

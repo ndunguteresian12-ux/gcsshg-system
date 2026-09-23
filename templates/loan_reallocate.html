@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Reallocate overpayment - GCSSHG{% endblock %}
+{% block header_right %}
+<nav>
+  <a href="/audit">&larr; Audit</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+<div class="section-title">
+  <h2 style="font-size:1.3rem;">Reallocate overpayment</h2>
+  <a href="/audit" class="row-link">&larr; Audit</a>
+</div>
+
+<div class="card">
+  <h1 style="font-size:1.2rem; margin:0;">{{ loan.full_name }} - loan #{{ loan.id }}</h1>
+  <div class="muted">Principal KES {{ "{:,.0f}".format(loan.principal) }} &middot; issued {{ loan.issue_date }}</div>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card solid-red">
+    <div class="stat-label">Overpaid by</div>
+    <div class="stat-value figure">{{ "{:,.2f}".format(excess) }}</div>
+  </div>
+</div>
+
+{% if other_loans %}
+<div class="card">
+  <p class="muted">
+    This creates a paired correction: the excess is removed from loan #{{ loan.id }} (visible as a
+    negative entry, so the original overpayment stays in the record) and applied as a normal
+    repayment to whichever loan you pick below.
+  </p>
+  <form method="post" action="/loans/{{ loan.id }}/reallocate">
+    <label for="target_loan_id">Move the excess to</label>
+    <select id="target_loan_id" name="target_loan_id" required>
+      {% for ol in other_loans %}
+      <option value="{{ ol.id }}">Loan #{{ ol.id }} - balance KES {{ "{:,.2f}".format(ol.current_balance) }}</option>
+      {% endfor %}
+    </select>
+
+    <label for="amount">Amount to move (KES)</label>
+    <input type="number" id="amount" name="amount" min="0.01" step="0.01"
+           value="{{ excess }}" max="{{ excess }}" required>
+
+    <button type="submit">Reallocate</button>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <p class="muted" style="margin:0;">
+    {{ loan.full_name }} has no other active loan to move this excess to. This money isn't lost - it's
+    just sitting as credit on an already-settled loan. Options: record it as an extra contribution for
+    this member instead (via the contributions entry), refund it, or leave it as-is until they take
+    another loan in future.
+  </p>
+</div>
+{% endif %}
+
+{% endblock %}
