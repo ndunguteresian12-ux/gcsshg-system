@@ -25,12 +25,19 @@
 <div class="card">
   <table>
     <tr><td style="width:40%; font-weight:600;">Borrower</td><td>{{ loan.borrower_name }}</td></tr>
-    <tr><td style="font-weight:600;">Loan amount</td><td class="figure">KES {{ "{:,.2f}".format(loan.principal) }}</td></tr>
+    <tr><td style="font-weight:600;">Principal (loan amount)</td><td class="figure">KES {{ "{:,.2f}".format(loan.principal) }}</td></tr>
+    <tr><td style="font-weight:600;">Interest terms</td><td>{{ loan.interest_rate }}% per {{ loan.period_months }} month{{ 's' if loan.period_months != 1 else '' }}</td></tr>
+    <tr><td style="font-weight:600;">Interest (if repaid by due date)</td><td class="figure" style="color:#8a611d; font-weight:600;">KES {{ "{:,.2f}".format(expected_interest) }}</td></tr>
+    <tr style="border-top:2px solid var(--forest);"><td style="font-weight:700;">Total amount to repay</td><td class="figure" style="font-weight:700; font-size:1.1rem;">KES {{ "{:,.2f}".format(total_owed) }}</td></tr>
     <tr><td style="font-weight:600;">Issue date</td><td>{{ loan.issue_date }}</td></tr>
     <tr><td style="font-weight:600;">Due date</td><td>{{ loan.due_date }}</td></tr>
-    <tr><td style="font-weight:600;">Interest terms</td><td>{{ loan.interest_rate }}% per {{ loan.period_months }} month{{ 's' if loan.period_months != 1 else '' }}</td></tr>
     <tr><td style="font-weight:600;">Approved by</td><td>{{ loan.approved_by_name or "-" }}</td></tr>
   </table>
+  {% if loan.interest_tier == 'low' %}
+  <p class="muted" style="margin-top:0.6rem; margin-bottom:0;">
+    Note: if not repaid by the due date, interest continues to accrue at {{ loan.interest_rate }}% for every additional month unpaid.
+  </p>
+  {% endif %}
 </div>
 
 <div class="card">

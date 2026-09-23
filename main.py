@@ -2273,10 +2273,17 @@ def loan_agreement_page(loan_id: int, request: Request, session_data=Depends(get
             guarantors = cur.fetchall()
             guaranteed_total = sum((g["amount_guaranteed"] for g in guarantors), Decimal("0"))
             self_guaranteed = max(loan["principal"] - guaranteed_total, Decimal("0"))
+
+            terms = terms_from_loan_row(loan)
+            expected_interest = loan_interest_due(
+                loan["principal"], loan["issue_date"], loan["due_date"], terms, loan.get("interest_override_periods")
+            )
+            total_owed = loan["principal"] + expected_interest
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loan_agreement.html", {
         "loan": loan, "guarantors": guarantors, "self_guaranteed": self_guaranteed,
+        "expected_interest": expected_interest, "total_owed": total_owed,
         "role": session_data["role"],
     })
 
@@ -2320,6 +2327,19 @@ def issue_loan_review(request: Request, member_id: int = Form(...), principal: f
             self_guarantee_amount = min(principal_dec, self_capacity)
             remaining_needed = max(principal_dec - self_capacity, Decimal("0"))
 
+            terms = classify_loan(
+                principal_dec,
+                low_ceiling=settings["low_loan_ceiling"],
+                low_rate=settings["low_loan_interest_rate"],
+                mid_rate=settings["high_loan_interest_rate"],
+                low_deadline=settings["low_loan_deadline_months"],
+                mid_deadline=settings["high_loan_deadline_months"],
+                high_ceiling=settings["high_loan_ceiling"],
+            )
+            due_date = compute_due_date(issue_date, terms)
+            expected_interest = loan_interest_due(principal_dec, issue_date, due_date, terms)
+            total_owed = principal_dec + expected_interest
+
             cur.execute("SELECT id, full_name FROM members WHERE status = 'active' AND id != %s ORDER BY full_name", (member_id,))
             other_members = cur.fetchall()
             eligible_guarantors = []
@@ -2336,6 +2356,7 @@ def issue_loan_review(request: Request, member_id: int = Form(...), principal: f
         "interest_override_periods": interest_override_periods or "",
         "self_capacity": self_capacity, "self_guarantee_amount": self_guarantee_amount,
         "remaining_needed": remaining_needed, "eligible_guarantors": eligible_guarantors,
+        "terms": terms, "due_date": due_date, "expected_interest": expected_interest, "total_owed": total_owed,
     })
 
 

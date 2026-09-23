@@ -18,6 +18,26 @@
   <div class="muted">Requesting KES {{ "{:,.0f}".format(principal) }} on {{ issue_date_field }}</div>
 </div>
 
+<div class="card">
+  <h2>Loan terms</h2>
+  <table>
+    <tr><td style="width:40%;">Interest tier</td><td>
+      <span class="badge {{ 'badge-low' if terms.tier == 'low' else 'badge-high' }}">
+        {{ terms.rate_percent }}% / {{ terms.period_months }}mo
+      </span>
+    </td></tr>
+    <tr><td>Due date</td><td>{{ due_date }}</td></tr>
+    <tr><td>Principal</td><td class="figure">KES {{ "{:,.2f}".format(principal) }}</td></tr>
+    <tr><td>Interest (if repaid by due date)</td><td class="figure" style="color: #8a611d; font-weight:600;">KES {{ "{:,.2f}".format(expected_interest) }}</td></tr>
+    <tr style="border-top:2px solid var(--forest); font-weight:700;"><td>Total amount to repay</td><td class="figure" style="font-size:1.1rem;">KES {{ "{:,.2f}".format(total_owed) }}</td></tr>
+  </table>
+  {% if terms.tier == 'low' %}
+  <p class="muted" style="margin-top:0.6rem;">
+    If not repaid by the due date, interest keeps accruing at {{ terms.rate_percent }}% for every month it remains unpaid.
+  </p>
+  {% endif %}
+</div>
+
 <div class="stat-grid">
   <div class="stat-card solid-forest">
     <div class="stat-label">Self-guarantee capacity</div>
