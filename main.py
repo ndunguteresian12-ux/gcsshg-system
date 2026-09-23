@@ -1303,7 +1303,7 @@ def render_statement_as_text(data):
             status = "overdue" if l["is_overdue"] else l["status"]
             lines.append(
                 f"  Issued {l['issue_date']} - Principal KES {l['principal']:,.0f} - "
-                f"Balance KES {l['current_balance']:,.2f} - {status}"
+                f"Paid KES {l['amount_repaid']:,.2f} - Balance KES {l['current_balance']:,.2f} - {status}"
             )
     else:
         lines.append("  (none on record)")
@@ -1470,6 +1470,7 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
             loans = cur.fetchall()
             loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in loans]
             total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
+            total_paid = sum((l["amount_repaid"] for l in loan_rows), Decimal("0"))
             total_interest = sum(
                 (l["current_balance"] - l["principal"] + l["amount_repaid"] for l in loan_rows), Decimal("0")
             )
@@ -1477,7 +1478,8 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
     finally:
         conn.close()
     return templates.TemplateResponse(request, "report_loans.html", {
-        "loans": loan_rows, "total_principal": total_principal, "total_interest": total_interest,
+        "loans": loan_rows, "total_principal": total_principal, "total_paid": total_paid,
+        "total_interest": total_interest,
         "total_outstanding": total_outstanding, "role": session_data["role"],
     })
 
@@ -1509,10 +1511,11 @@ def email_loans_report(recipient_email: str = Form(...), session_data=Depends(ge
     for l in loan_rows:
         lines.append(
             f"  {l['full_name']:<25} Issued {l['issue_date']} - Principal KES {l['principal']:>10,.0f} - "
-            f"Balance KES {l['current_balance']:>10,.2f} - {l['status']}"
+            f"Paid KES {l['amount_repaid']:>10,.2f} - Balance KES {l['current_balance']:>10,.2f} - {l['status']}"
         )
     lines += [
         "", f"Total principal issued: KES {total_principal:,.2f}",
+        f"Total paid: KES {sum((l['amount_repaid'] for l in loan_rows), Decimal('0')):,.2f}",
         f"Total interest charged: KES {total_interest:,.2f}",
         f"Currently outstanding: KES {total_outstanding:,.2f}",
         "", "- GCSSHG",
@@ -2243,6 +2246,41 @@ def loan_statement_page(loan_id: int, request: Request, session_data=Depends(get
     })
 
 
+@app.get("/loans/{loan_id}/agreement", response_class=HTMLResponse)
+def loan_agreement_page(loan_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT l.*, m.full_name as borrower_name, u.full_name as approved_by_name
+                   FROM loans l JOIN members m ON m.id = l.member_id
+                   LEFT JOIN users u ON u.id = l.approved_by
+                   WHERE l.id = %s""",
+                (loan_id,),
+            )
+            loan = cur.fetchone()
+            if not loan:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
+
+            cur.execute(
+                """SELECT lg.amount_guaranteed, m.full_name FROM loan_guarantors lg
+                   JOIN members m ON m.id = lg.guarantor_member_id
+                   WHERE lg.loan_id = %s ORDER BY lg.amount_guaranteed DESC""",
+                (loan_id,),
+            )
+            guarantors = cur.fetchall()
+            guaranteed_total = sum((g["amount_guaranteed"] for g in guarantors), Decimal("0"))
+            self_guaranteed = max(loan["principal"] - guaranteed_total, Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "loan_agreement.html", {
+        "loan": loan, "guarantors": guarantors, "self_guaranteed": self_guaranteed,
+        "role": session_data["role"],
+    })
+
+
 @app.post("/loans/issue/review")
 def issue_loan_review(request: Request, member_id: int = Form(...), principal: float = Form(...),
                        issue_date_field: str = Form(...),
@@ -2385,7 +2423,7 @@ async def issue_loan_confirm(request: Request, session_data=Depends(get_session_
             conn.commit()
     finally:
         conn.close()
-    return RedirectResponse(url="/loans/issue?success=Loan+issued+-+ready+for+the+next+one", status_code=303)
+    return RedirectResponse(url=f"/loans/{new_loan_id}/agreement", status_code=303)
 
 
 def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
@@ -2454,14 +2492,21 @@ def get_loan_balance(cur, loan, as_of):
     return loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
 
 
-def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, recorded_by):
+def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, recorded_by, exclude_loan_ids=None):
     """
     Applies a payment to the chosen loan first (up to its balance), then
     rolls any excess onto the same member's other active loans, oldest due
-    date first. Returns (list of (loan_id, amount_applied) actually
+    date first - so an overpayment never just sits as a negative balance
+    on one loan. Returns (list of (loan_id, amount_applied) actually
     recorded, leftover) - leftover is > 0 only if the member has no more
     active loans left to absorb the excess.
+
+    exclude_loan_ids: loan IDs to skip when cascading (used by bulk entry,
+    where those loans already have their own separately-entered amount in
+    the same batch - so this won't silently double up or override an
+    explicit per-row allocation the officer already made).
     """
+    exclude_loan_ids = exclude_loan_ids or set()
     cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
     target_loan = cur.fetchone()
     if not target_loan:
@@ -2471,7 +2516,7 @@ def apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, record
         "SELECT * FROM loans WHERE member_id = %s AND status = 'active' ORDER BY due_date ASC",
         (target_loan["member_id"],),
     )
-    other_active = [l for l in cur.fetchall() if l["id"] != loan_id]
+    other_active = [l for l in cur.fetchall() if l["id"] != loan_id and l["id"] not in exclude_loan_ids]
     ordered_loans = [target_loan] + other_active
 
     remaining = amount_dec
@@ -2534,8 +2579,22 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
     conn = get_conn()
     saved = 0
     skipped_no_date = 0
+    total_leftover = Decimal("0")
     try:
         with conn.cursor() as cur:
+            # Collect every loan that has its own explicit amount in this
+            # batch first, so cascading from one loan's overpayment never
+            # overrides an amount the officer separately entered for another
+            # loan in the same submission.
+            touched_loan_ids = set()
+            for key, value in form.multi_items():
+                if key.startswith("amount_") and value.strip():
+                    try:
+                        if Decimal(value) > 0:
+                            touched_loan_ids.add(int(key.replace("amount_", "")))
+                    except Exception:
+                        pass
+
             for key, value in form.multi_items():
                 if not key.startswith("amount_") or not value.strip():
                     continue
@@ -2558,21 +2617,27 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
                     skipped_no_date += 1
                     continue
 
-                cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
-                loan = cur.fetchone()
-                if not loan:
-                    continue
-                # Applied exactly to THIS loan, as entered - no overflow to other
-                # loans. In bulk mode the officer is already allocating amounts
-                # across multiple rows themselves, so auto-cascading would
-                # second-guess a choice they've already made.
-                apply_loan_repayment(cur, loan, amount_dec, payment_date, session_data["user_id"])
-                saved += 1
+                # Applied to THIS loan first (up to its balance, as entered),
+                # then any excess automatically rolls onto this same member's
+                # OTHER active loans NOT otherwise touched in this batch - so
+                # an amount typed against one loan is never lost to a negative
+                # balance, and never silently overrides a separate amount the
+                # officer entered for another one of that member's loans.
+                other_touched = touched_loan_ids - {loan_id}
+                applied, leftover = apply_repayment_with_overflow(
+                    cur, loan_id, amount_dec, payment_date, session_data["user_id"],
+                    exclude_loan_ids=other_touched,
+                )
+                if applied:
+                    saved += 1
+                total_leftover += leftover
             conn.commit()
     finally:
         conn.close()
 
     message = f"{saved}+repayment(s)+recorded"
+    if total_leftover > 0:
+        message += f"+-+KES+{total_leftover:,.0f}+could+not+be+applied+(no+more+active+loans+for+some+members)"
     if skipped_no_date:
         message += f"+-+{skipped_no_date}+skipped+(no+date+given)"
     redirect_url = f"/loans?success={message}"

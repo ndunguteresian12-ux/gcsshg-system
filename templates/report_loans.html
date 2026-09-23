@@ -40,6 +40,10 @@
     <div class="stat-label">Total principal issued</div>
     <div class="stat-value figure">{{ "{:,.0f}".format(total_principal) }}</div>
   </div>
+  <div class="stat-card solid-forest">
+    <div class="stat-label">Total paid</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_paid) }}</div>
+  </div>
   <div class="stat-card">
     <div class="stat-label">Total interest charged</div>
     <div class="stat-value figure gold">{{ "{:,.0f}".format(total_interest) }}</div>
@@ -54,7 +58,8 @@
   <table>
     <tr>
       <th>Member</th><th>Issued</th><th class="figure-head">Principal</th>
-      <th class="figure-head">Interest</th><th class="figure-head">Balance</th><th>Status</th>
+      <th class="figure-head">Interest</th><th class="figure-head">Paid</th>
+      <th class="figure-head">Balance</th><th>Status</th>
     </tr>
     {% for l in loans %}
     <tr>
@@ -62,6 +67,7 @@
       <td>{{ l.issue_date }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.principal) }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance - l.principal + l.amount_repaid) }}</td>
+      <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
       <td>{% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>{% else %}{{ l.status }}{% endif %}</td>
     </tr>

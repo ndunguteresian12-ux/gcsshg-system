@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Loan Agreement - {{ loan.borrower_name }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/loans/{{ loan.id }}/statement">&larr; Loan statement</a>
+  <a href="/loans/issue">Issue another loan</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card no-print" style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+  <button onclick="window.print()" class="btn" style="width:auto; margin-top:0;">Print / Save as PDF</button>
+  <a href="/loans/issue" class="btn btn-secondary" style="width:auto; margin-top:0;">Issue another loan</a>
+  <a href="/loans/{{ loan.id }}/statement" class="btn btn-secondary" style="width:auto; margin-top:0;">View loan statement</a>
+</div>
+
+<div class="card">
+  <h1 style="font-size:1.3rem; text-align:center; margin:0 0 0.3rem;">LOAN AGREEMENT</h1>
+  <p class="muted" style="text-align:center; margin:0;">Githiga Comprehensive School Self Help Group</p>
+</div>
+
+<div class="card">
+  <table>
+    <tr><td style="width:40%; font-weight:600;">Borrower</td><td>{{ loan.borrower_name }}</td></tr>
+    <tr><td style="font-weight:600;">Loan amount</td><td class="figure">KES {{ "{:,.2f}".format(loan.principal) }}</td></tr>
+    <tr><td style="font-weight:600;">Issue date</td><td>{{ loan.issue_date }}</td></tr>
+    <tr><td style="font-weight:600;">Due date</td><td>{{ loan.due_date }}</td></tr>
+    <tr><td style="font-weight:600;">Interest terms</td><td>{{ loan.interest_rate }}% per {{ loan.period_months }} month{{ 's' if loan.period_months != 1 else '' }}</td></tr>
+    <tr><td style="font-weight:600;">Approved by</td><td>{{ loan.approved_by_name or "-" }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Guarantee coverage</h2>
+  <table>
+    <tr><td style="width:40%;">Self-guaranteed by borrower's own deposits</td><td class="figure" style="text-align:right;">KES {{ "{:,.2f}".format(self_guaranteed) }}</td></tr>
+    {% for g in guarantors %}
+    <tr><td>Guaranteed by {{ g.full_name }}</td><td class="figure" style="text-align:right;">KES {{ "{:,.2f}".format(g.amount_guaranteed) }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <p class="muted" style="margin-top:0;">
+    By signing below, the borrower agrees to repay this loan on the terms above, and each guarantor
+    named agrees to be responsible for their stated guaranteed amount in the event the borrower
+    defaults.
+  </p>
+
+  <div style="margin-top:2rem;">
+    <div style="border-top:1px solid var(--ink); width:70%; margin-top:2.5rem;"></div>
+    <p style="margin:0.3rem 0 0;"><strong>Borrower:</strong> {{ loan.borrower_name }}</p>
+    <p class="muted" style="margin:0.2rem 0 0;">Signature: _____________________________&nbsp;&nbsp;&nbsp; Date: _______________</p>
+  </div>
+
+  {% for g in guarantors %}
+  <div style="margin-top:2rem;">
+    <div style="border-top:1px solid var(--ink); width:70%; margin-top:2.5rem;"></div>
+    <p style="margin:0.3rem 0 0;"><strong>Guarantor {{ loop.index }}:</strong> {{ g.full_name }} (KES {{ "{:,.0f}".format(g.amount_guaranteed) }})</p>
+    <p class="muted" style="margin:0.2rem 0 0;">Signature: _____________________________&nbsp;&nbsp;&nbsp; Date: _______________</p>
+  </div>
+  {% endfor %}
+
+  <div style="margin-top:2rem;">
+    <div style="border-top:1px solid var(--ink); width:70%; margin-top:2.5rem;"></div>
+    <p style="margin:0.3rem 0 0;"><strong>Issuing officer:</strong> {{ loan.approved_by_name or "_____________________" }}</p>
+    <p class="muted" style="margin:0.2rem 0 0;">Signature: _____________________________&nbsp;&nbsp;&nbsp; Date: _______________</p>
+  </div>
+
+  <div style="margin-top:2rem;">
+    <div style="border-top:1px solid var(--ink); width:70%; margin-top:2.5rem;"></div>
+    <p style="margin:0.3rem 0 0;"><strong>Secretary / Witness:</strong> _____________________________</p>
+    <p class="muted" style="margin:0.2rem 0 0;">Signature: _____________________________&nbsp;&nbsp;&nbsp; Date: _______________</p>
+  </div>
+</div>
+
+{% endblock %}
