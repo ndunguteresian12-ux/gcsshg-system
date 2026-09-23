@@ -794,15 +794,24 @@ def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_offi
 # DIVIDENDS
 # ---------------------------------------------------------------------------
 
-def compute_dividend_records(cur):
+def compute_dividend_records(cur, period_start, period_end):
+    """
+    period_start (inclusive) to period_end (exclusive) - the exact fiscal
+    year window being paid out. Grouping by calendar month is only safe
+    once contributions are scoped to a single fiscal year like this -
+    without a date range, a March from one year and a March from another
+    would merge into one bucket, silently double-counting prior years on
+    any second or later dividend run.
+    """
     cur.execute("SELECT id, full_name FROM members WHERE status = 'active'")
     members = cur.fetchall()
     records = []
     for m in members:
         cur.execute(
             "SELECT EXTRACT(MONTH FROM contribution_month)::int as mon, SUM(amount) as amt "
-            "FROM contributions WHERE member_id = %s GROUP BY mon",
-            (m["id"],),
+            "FROM contributions WHERE member_id = %s AND contribution_month >= %s AND contribution_month < %s "
+            "GROUP BY mon",
+            (m["id"], period_start, period_end),
         )
         rows = cur.fetchall()
         monthly = [(r["mon"], r["amt"]) for r in rows]
@@ -875,8 +884,24 @@ def dividends_page(request: Request, session_data=Depends(get_session_optional))
     finally:
         conn.close()
     suggested_pool = total_interest_collected - total_already_paid
+
+    # Group runs sharing the same fiscal_year_label together - several
+    # historical entries (or a historical entry plus a computed run) for
+    # the same year show as one combined line, not scattered separately.
+    grouped = {}
+    for r in runs:
+        label = r["fiscal_year_label"]
+        if label not in grouped:
+            grouped[label] = {"label": label, "run_count": 0, "total_pool": Decimal("0"), "latest": r["computed_at"]}
+        grouped[label]["run_count"] += 1
+        grouped[label]["total_pool"] += r["total_interest_pool"]
+        if r["computed_at"] > grouped[label]["latest"]:
+            grouped[label]["latest"] = r["computed_at"]
+    year_groups = sorted(grouped.values(), key=lambda g: g["latest"], reverse=True)
+
     return templates.TemplateResponse(request, "dividends.html", {
-        "runs": runs, "suggested_pool": suggested_pool, "role": session_data["role"],
+        "year_groups": year_groups, "suggested_pool": suggested_pool, "role": session_data["role"],
+        "current_year": date.today().year,
     })
 
 
@@ -954,6 +979,7 @@ async def record_historical_dividend_submit(request: Request, session_data=Depen
 
 @app.post("/dividends/preview")
 def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
+                       fiscal_year_start_year: int = Form(...),
                        total_interest_pool: float = Form(...),
                        session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
@@ -966,7 +992,9 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
             admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
             transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
             member_pool = gross - admin_amount - transaction_amount
-            records = compute_dividend_records(cur)
+            period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
+            period_end = add_months(period_start, settings["fiscal_year_length_months"])
+            records = compute_dividend_records(cur, period_start, period_end)
             results = run_dividends(
                 records, member_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
@@ -976,6 +1004,8 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
     results_sorted = sorted(results, key=lambda r: r.dividend_amount, reverse=True)
     return templates.TemplateResponse(request, "dividend_preview.html", {
         "results": results_sorted, "fiscal_year_label": fiscal_year_label,
+        "fiscal_year_start_year": fiscal_year_start_year,
+        "period_start": period_start, "period_end": period_end,
         "total_interest_pool": total_interest_pool, "role": session_data["role"],
         "gross_pool": gross, "admin_amount": admin_amount,
         "transaction_amount": transaction_amount, "member_pool": member_pool,
@@ -987,7 +1017,8 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
 
 
 @app.post("/dividends/confirm")
-def dividends_confirm(fiscal_year_label: str = Form(...), total_interest_pool: float = Form(...),
+def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year: int = Form(...),
+                       total_interest_pool: float = Form(...),
                        session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
@@ -999,7 +1030,9 @@ def dividends_confirm(fiscal_year_label: str = Form(...), total_interest_pool: f
             admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
             transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
             member_pool = gross - admin_amount - transaction_amount
-            records = compute_dividend_records(cur)
+            period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
+            period_end = add_months(period_start, settings["fiscal_year_length_months"])
+            records = compute_dividend_records(cur, period_start, period_end)
             results = run_dividends(
                 records, member_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
@@ -1037,6 +1070,39 @@ def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_
         conn.close()
     return templates.TemplateResponse(request, "dividend_run_detail.html", {
         "run": run, "dividends": dividends, "role": session_data["role"],
+    })
+
+
+@app.get("/dividends/year-sheet", response_class=HTMLResponse)
+def dividend_year_sheet(request: Request, label: str, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+view+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dividend_runs WHERE fiscal_year_label = %s ORDER BY computed_at", (label,))
+            runs = cur.fetchall()
+            if not runs:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>No dividend runs found for this year.</p>")
+            run_ids = [r["id"] for r in runs]
+
+            # One row per member, dividend amounts combined across every run
+            # sharing this fiscal year label.
+            cur.execute(
+                """SELECT m.id as member_id, m.full_name, COALESCE(SUM(d.dividend_amount),0) as total_dividend
+                   FROM members m JOIN dividends d ON d.member_id = m.id
+                   WHERE d.dividend_run_id = ANY(%s)
+                   GROUP BY m.id, m.full_name ORDER BY total_dividend DESC""",
+                (run_ids,),
+            )
+            member_totals = cur.fetchall()
+            grand_total = sum((m["total_dividend"] for m in member_totals), Decimal("0"))
+            total_pool = sum((r["total_interest_pool"] for r in runs), Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_year_sheet.html", {
+        "label": label, "runs": runs, "member_totals": member_totals,
+        "grand_total": grand_total, "total_pool": total_pool, "role": session_data["role"],
     })
 
 

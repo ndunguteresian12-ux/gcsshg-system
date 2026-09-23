@@ -11,7 +11,11 @@
 <div class="card">
   <a href="/dividends" class="row-link">&larr; Back to Dividends</a>
   <h2 style="margin:0.6rem 0 0;">Preview: {{ fiscal_year_label }}</h2>
-  <p class="muted">Nothing has been saved yet - review below, then confirm.</p>
+  <p class="muted">
+    Nothing has been saved yet - review below, then confirm.
+    Counting contributions from {{ period_start.strftime('%b %Y') }} to
+    {{ (period_end.replace(day=1)).strftime('%b %Y') }} (exclusive) only.
+  </p>
 </div>
 
 <div class="stat-grid">
@@ -50,6 +54,7 @@
 <div class="card">
   <form method="post" action="/dividends/confirm">
     <input type="hidden" name="fiscal_year_label" value="{{ fiscal_year_label }}">
+    <input type="hidden" name="fiscal_year_start_year" value="{{ fiscal_year_start_year }}">
     <input type="hidden" name="total_interest_pool" value="{{ total_interest_pool }}">
     <button type="submit">Confirm and save this dividend run</button>
   </form>

@@ -29,7 +29,15 @@
   </p>
   <form method="post" action="/dividends/preview">
     <label for="fiscal_year_label">Fiscal year label</label>
-    <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. Mar 2025 - Jan 2026" required>
+    <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. Mar 2025 - Feb 2026" required>
+
+    <label for="fiscal_year_start_year">Fiscal year starts in (calendar year)</label>
+    <input type="number" id="fiscal_year_start_year" name="fiscal_year_start_year" min="2020" max="2100"
+           value="{{ current_year }}" required>
+    <p class="muted" style="margin-top:0.3rem;">
+      Only contributions within this specific fiscal year window are counted - this keeps each
+      dividend run scoped to its own year, so a later run never double-counts an earlier one.
+    </p>
 
     <label for="total_interest_pool">Total interest pool (gross, before admin/transaction cuts) (KES)</label>
     <input type="number" id="total_interest_pool" name="total_interest_pool" step="0.01" min="0"
@@ -41,15 +49,16 @@
 
 <div class="card">
   <h2>Past dividend runs</h2>
-  {% if runs %}
+  {% if year_groups %}
   <table>
-    <tr><th>Fiscal year</th><th class="figure-head">Pool</th><th>Computed</th><th></th></tr>
-    {% for r in runs %}
+    <tr><th>Fiscal year</th><th class="figure-head">Combined pool</th><th>Runs</th><th>Latest</th><th></th></tr>
+    {% for g in year_groups %}
     <tr>
-      <td>{{ r.fiscal_year_label }}</td>
-      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.total_interest_pool) }}</td>
-      <td>{{ r.computed_at.strftime('%d %b %Y') }}</td>
-      <td><a class="row-link" href="/dividends/{{ r.id }}">View &rarr;</a></td>
+      <td>{{ g.label }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(g.total_pool) }}</td>
+      <td>{{ g.run_count }}{% if g.run_count > 1 %} (combined){% endif %}</td>
+      <td>{{ g.latest.strftime('%d %b %Y') }}</td>
+      <td><a class="row-link" href="/dividends/year-sheet?label={{ g.label|urlencode }}">View sheet &rarr;</a></td>
     </tr>
     {% endfor %}
   </table>

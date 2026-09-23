@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Dividend Sheet - {{ label }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/dividends">&larr; Dividends</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card">
+  <a href="/dividends" class="row-link no-print">&larr; Back to Dividends</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">Dividend sheet - {{ label }}</h1>
+  <div class="muted">
+    Combines {{ runs|length }} run{{ 's' if runs|length != 1 else '' }} recorded for this fiscal year
+    into one sheet - each member's total below is summed across all of them.
+  </div>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
+  <div class="stat-card">
+    <div class="stat-label">Combined pool (all runs)</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(total_pool) }}</div>
+  </div>
+  <div class="stat-card solid-gold">
+    <div class="stat-label">Total paid out to members</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(grand_total) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Per-member totals</h2>
+  <table>
+    <tr><th>Member</th><th class="figure-head">Total dividend</th></tr>
+    {% for m in member_totals %}
+    <tr>
+      <td>{{ m.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(m.total_dividend) }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--forest); font-weight:700;">
+      <td>Total</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(grand_total) }}</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card no-print">
+  <h2>Runs included in this sheet</h2>
+  <table>
+    <tr><th>Computed</th><th class="figure-head">Pool</th><th></th></tr>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.computed_at.strftime('%d %b %Y') }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.total_interest_pool) }}</td>
+      <td><a class="row-link" href="/dividends/{{ r.id }}">View run &rarr;</a></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+{% endblock %}
