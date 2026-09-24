@@ -13,6 +13,11 @@
 <div class="card">
   <a href="/dividends" class="row-link no-print">&larr; Back to Dividends</a>
   <h2 style="margin:0.6rem 0 0;">{{ run.fiscal_year_label }}</h2>
+  {% if run.is_cumulative %}
+  <p class="muted" style="color: #8a611d; font-weight:600; margin-top:0.3rem;">
+    One-time cumulative catch-up - covers everything since the group started, weighted by total months in the pool with no annual reset.
+  </p>
+  {% endif %}
   <p class="muted">Computed {{ run.computed_at.strftime('%d %b %Y, %H:%M') }} &middot; paid to members KES {{ "{:,.2f}".format(run.total_interest_pool) }}</p>
   {% if run.gross_pool %}
   <p class="muted">

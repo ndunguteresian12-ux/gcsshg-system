@@ -240,6 +240,56 @@ def run_dividends(records: list, total_interest_pool: Decimal, start_month: int,
     return results
 
 
+@dataclass
+class MemberContributionRecordCumulative:
+    member_id: int
+    full_name: str
+    monthly_amounts: list  # list[tuple[date, Decimal]] - (contribution_month DATE, amount), spans multiple years
+
+
+def cumulative_month_weight(contribution_year: int, contribution_month: int, as_of_year: int, as_of_month: int) -> int:
+    """
+    Months elapsed from a contribution's own month to the as-of month,
+    inclusive, with NO annual reset - used for a one-time cumulative
+    dividend covering the group's entire history to date rather than one
+    fiscal year. A contribution from the group's very first month keeps
+    earning more weight every month that passes; a contribution made in
+    the as-of month itself gets the minimum weight of 1.
+    """
+    return (as_of_year - contribution_year) * 12 + (as_of_month - contribution_month) + 1
+
+
+def compute_weighted_contribution_cumulative(record: MemberContributionRecordCumulative, as_of_date: date) -> Decimal:
+    weighted_total = Decimal("0")
+    for month_date, amount in record.monthly_amounts:
+        w = cumulative_month_weight(month_date.year, month_date.month, as_of_date.year, as_of_date.month)
+        weighted_total += Decimal(amount) * w
+    return weighted_total
+
+
+def run_dividends_cumulative(records: list, total_interest_pool: Decimal, as_of_date: date) -> list:
+    """Same proportional-share logic as run_dividends, fed by cumulative (since-inception) weights instead."""
+    weighted = []
+    total_weighted = Decimal("0")
+    for r in records:
+        w = compute_weighted_contribution_cumulative(r, as_of_date)
+        weighted.append(w)
+        total_weighted += w
+
+    results = []
+    pool = Decimal(total_interest_pool)
+    for r, w in zip(records, weighted):
+        share = (w / total_weighted) if total_weighted > 0 else Decimal("0")
+        dividend = (pool * share).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        total_contribution = sum(Decimal(a) for _, a in r.monthly_amounts)
+        results.append(DividendResult(
+            member_id=r.member_id, full_name=r.full_name,
+            total_contribution=total_contribution, weighted_contribution=w,
+            dividend_amount=dividend,
+        ))
+    return results
+
+
 if __name__ == "__main__":
     print("Low tier: 15,000 loan issued Jan 1, checked May 5 (well past 1-month due date)")
     terms_low = classify_loan(Decimal("15000"))

@@ -37,7 +37,8 @@ import itsdangerous
 
 from calculations import (
     classify_loan, loan_interest_due, loan_balance_due,
-    run_dividends, MemberContributionRecord,
+    run_dividends, MemberContributionRecord, fiscal_month_sequence, month_weight,
+    run_dividends_cumulative, MemberContributionRecordCumulative, cumulative_month_weight,
     compute_due_date, is_loan_overdue, loan_overdue_months, loan_penalty_due,
     mid_tier_installment_schedule, LoanTerms, add_months,
 )
@@ -936,6 +937,40 @@ def build_dividend_month_breakdown(cur, member_id, period_start, period_end, sta
     return {"rows": rows, "total_contribution": total_contribution, "total_weighted": total_weighted}
 
 
+def build_dividend_month_breakdown_cumulative(cur, member_id, period_start, as_of_date):
+    """
+    Same idea as build_dividend_month_breakdown, but for a cumulative
+    (since-inception) run: walks every month from the group's first
+    contribution through as_of_date, spanning as many years as needed,
+    with weight decreasing by 1 each month with no annual reset.
+    """
+    cur.execute(
+        "SELECT contribution_month, amount FROM contributions "
+        "WHERE member_id = %s AND contribution_month <= %s ORDER BY contribution_month",
+        (member_id, as_of_date),
+    )
+    amounts_by_month = {r["contribution_month"]: r["amount"] for r in cur.fetchall()}
+
+    rows = []
+    total_contribution = Decimal("0")
+    total_weighted = Decimal("0")
+    cursor_date = period_start.replace(day=1)
+    as_of_month_start = as_of_date.replace(day=1)
+    while cursor_date <= as_of_month_start:
+        weight = cumulative_month_weight(cursor_date.year, cursor_date.month, as_of_date.year, as_of_date.month)
+        amount = amounts_by_month.get(cursor_date, Decimal("0"))
+        weighted_value = amount * weight
+        rows.append({
+            "month_label": cursor_date.strftime("%b %Y"), "weight": weight,
+            "amount": amount, "weighted_value": weighted_value,
+        })
+        total_contribution += amount
+        total_weighted += weighted_value
+        cursor_date = add_months(cursor_date, 1)
+
+    return {"rows": rows, "total_contribution": total_contribution, "total_weighted": total_weighted}
+
+
 def compute_dividend_records(cur, period_start, period_end):
     """
     period_start (inclusive) to period_end (exclusive) - the exact fiscal
@@ -962,20 +997,44 @@ def compute_dividend_records(cur, period_start, period_end):
     return records
 
 
+def compute_dividend_records_cumulative(cur, as_of_date):
+    """
+    ALL contributions ever made, from the group's very first one through
+    as_of_date - for the one-time cumulative dividend covering everything
+    since inception, weighted by total elapsed months rather than
+    position within one fiscal year.
+    """
+    cur.execute("SELECT id, full_name FROM members WHERE status = 'active'")
+    members = cur.fetchall()
+    records = []
+    for m in members:
+        cur.execute(
+            "SELECT contribution_month, SUM(amount) as amt FROM contributions "
+            "WHERE member_id = %s AND contribution_month <= %s GROUP BY contribution_month",
+            (m["id"], as_of_date),
+        )
+        rows = cur.fetchall()
+        monthly = [(r["contribution_month"], r["amt"]) for r in rows]
+        records.append(MemberContributionRecordCumulative(member_id=m["id"], full_name=m["full_name"],
+                                                            monthly_amounts=monthly))
+    return records
+
+
 def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results,
                        gross_pool=None, admin_amount=Decimal("0"), transaction_cost_amount=Decimal("0"),
                        admin_label="Administration", transaction_label="Transaction costs",
-                       period_start=None, period_end=None):
+                       period_start=None, period_end=None, is_cumulative=False):
     total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
     cur.execute(
         """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
                                        total_weighted_contributions, computed_by,
                                        gross_pool, admin_amount, transaction_cost_amount,
-                                       admin_label, transaction_label, period_start, period_end)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                       admin_label, transaction_label, period_start, period_end,
+                                       is_cumulative)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (fiscal_year_label, total_interest_pool, total_weighted, computed_by,
          gross_pool, admin_amount, transaction_cost_amount, admin_label, transaction_label,
-         period_start, period_end),
+         period_start, period_end, is_cumulative),
     )
     run_id = cur.fetchone()["id"]
     for r in results:
@@ -1121,11 +1180,15 @@ async def record_historical_dividend_submit(request: Request, session_data=Depen
 
 @app.post("/dividends/preview")
 def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
-                       fiscal_year_start_year: int = Form(...),
+                       fiscal_year_start_year: Optional[int] = Form(None),
+                       cumulative: Optional[str] = Form(None),
                        total_interest_pool: float = Form(...),
                        session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
+    is_cumulative = bool(cumulative)
+    if not is_cumulative and not fiscal_year_start_year:
+        return RedirectResponse(url="/dividends?error=Pick+a+fiscal+year+start+year+or+choose+cumulative", status_code=303)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -1134,19 +1197,28 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
             admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
             transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
             member_pool = gross - admin_amount - transaction_amount
-            period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
-            period_end = add_months(period_start, settings["fiscal_year_length_months"])
-            records = compute_dividend_records(cur, period_start, period_end)
-            results = run_dividends(
-                records, member_pool,
-                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
-            )
+
+            if is_cumulative:
+                as_of_date = date.today()
+                cur.execute("SELECT MIN(contribution_month) as earliest FROM contributions")
+                period_start = cur.fetchone()["earliest"] or as_of_date
+                period_end = as_of_date
+                records = compute_dividend_records_cumulative(cur, as_of_date)
+                results = run_dividends_cumulative(records, member_pool, as_of_date)
+            else:
+                period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
+                period_end = add_months(period_start, settings["fiscal_year_length_months"])
+                records = compute_dividend_records(cur, period_start, period_end)
+                results = run_dividends(
+                    records, member_pool,
+                    settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+                )
     finally:
         conn.close()
     results_sorted = sorted(results, key=lambda r: r.dividend_amount, reverse=True)
     return templates.TemplateResponse(request, "dividend_preview.html", {
         "results": results_sorted, "fiscal_year_label": fiscal_year_label,
-        "fiscal_year_start_year": fiscal_year_start_year,
+        "fiscal_year_start_year": fiscal_year_start_year, "is_cumulative": is_cumulative,
         "period_start": period_start, "period_end": period_end,
         "total_interest_pool": total_interest_pool, "role": session_data["role"],
         "gross_pool": gross, "admin_amount": admin_amount,
@@ -1159,11 +1231,13 @@ def dividends_preview(request: Request, fiscal_year_label: str = Form(...),
 
 
 @app.post("/dividends/confirm")
-def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year: int = Form(...),
+def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year: Optional[int] = Form(None),
+                       cumulative: Optional[str] = Form(None),
                        total_interest_pool: float = Form(...),
                        session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
         return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+run+dividends", status_code=303)
+    is_cumulative = bool(cumulative)
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -1172,20 +1246,30 @@ def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year
             admin_amount = (gross * settings["dividend_admin_percent"] / 100).quantize(Decimal("0.01"))
             transaction_amount = (gross * settings["dividend_transaction_percent"] / 100).quantize(Decimal("0.01"))
             member_pool = gross - admin_amount - transaction_amount
-            period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
-            period_end = add_months(period_start, settings["fiscal_year_length_months"])
-            records = compute_dividend_records(cur, period_start, period_end)
-            results = run_dividends(
-                records, member_pool,
-                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
-            )
+
+            if is_cumulative:
+                as_of_date = date.today()
+                cur.execute("SELECT MIN(contribution_month) as earliest FROM contributions")
+                period_start = cur.fetchone()["earliest"] or as_of_date
+                period_end = as_of_date
+                records = compute_dividend_records_cumulative(cur, as_of_date)
+                results = run_dividends_cumulative(records, member_pool, as_of_date)
+            else:
+                period_start = date(fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
+                period_end = add_months(period_start, settings["fiscal_year_length_months"])
+                records = compute_dividend_records(cur, period_start, period_end)
+                results = run_dividends(
+                    records, member_pool,
+                    settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+                )
             run_id = save_dividend_run(cur, fiscal_year_label, member_pool,
                                         session_data["user_id"], results,
                                         gross_pool=gross, admin_amount=admin_amount,
                                         transaction_cost_amount=transaction_amount,
                                         admin_label=settings["dividend_admin_label"],
                                         transaction_label=settings["dividend_transaction_label"],
-                                        period_start=period_start, period_end=period_end)
+                                        period_start=period_start, period_end=period_end,
+                                        is_cumulative=is_cumulative)
             conn.commit()
     finally:
         conn.close()
@@ -1283,10 +1367,15 @@ def dividend_member_breakdown(run_id: int, member_id: int, request: Request,
                 return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>No dividend record found for this member on this run.</p>")
 
             settings = get_settings(cur)
-            breakdown = build_dividend_month_breakdown(
-                cur, member_id, run["period_start"], run["period_end"],
-                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
-            )
+            if run["is_cumulative"]:
+                breakdown = build_dividend_month_breakdown_cumulative(
+                    cur, member_id, run["period_start"], run["period_end"]
+                )
+            else:
+                breakdown = build_dividend_month_breakdown(
+                    cur, member_id, run["period_start"], run["period_end"],
+                    settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+                )
     finally:
         conn.close()
     return templates.TemplateResponse(request, "dividend_member_breakdown.html", {

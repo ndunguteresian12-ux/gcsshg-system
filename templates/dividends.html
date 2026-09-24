@@ -31,13 +31,27 @@
     <label for="fiscal_year_label">Fiscal year label</label>
     <input type="text" id="fiscal_year_label" name="fiscal_year_label" placeholder="e.g. Mar 2025 - Feb 2026" required>
 
-    <label for="fiscal_year_start_year">Fiscal year starts in (calendar year)</label>
-    <input type="number" id="fiscal_year_start_year" name="fiscal_year_start_year" min="2020" max="2100"
-           value="{{ current_year }}" required>
+    <label style="display:flex; align-items:center; gap:0.5rem; margin-top:0.9rem;">
+      <input type="checkbox" id="cumulative" name="cumulative" value="yes" style="width:auto;"
+             onchange="document.getElementById('year_field').style.display = this.checked ? 'none' : 'block';">
+      This is a one-time cumulative catch-up, covering everything since the group started
+    </label>
     <p class="muted" style="margin-top:0.3rem;">
-      Only contributions within this specific fiscal year window are counted - this keeps each
-      dividend run scoped to its own year, so a later run never double-counts an earlier one.
+      Weighs every contribution ever made by how many months it's been in the pool up to today, with
+      no annual reset - use this once to catch up on everything since inception, then switch back to
+      normal per-year runs afterward.
     </p>
+
+    <div id="year_field">
+      <label for="fiscal_year_start_year">Fiscal year starts in (calendar year)</label>
+      <input type="number" id="fiscal_year_start_year" name="fiscal_year_start_year" min="2020" max="2100"
+             value="{{ current_year }}">
+      <p class="muted" style="margin-top:0.3rem;">
+        Only contributions within this specific fiscal year window are counted - this keeps each
+        dividend run scoped to its own year, so a later run never double-counts an earlier one.
+        Ignored if "cumulative" above is checked.
+      </p>
+    </div>
 
     <label for="total_interest_pool">Total interest pool (gross, before admin/transaction cuts) (KES)</label>
     <input type="number" id="total_interest_pool" name="total_interest_pool" step="0.01" min="0"
