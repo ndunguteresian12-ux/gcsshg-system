@@ -455,6 +455,98 @@ def get_guarantor_available_capacity(cur, member_id, penalty_amount, exclude_loa
     return max(deposits - own_loan_balance - committed, Decimal("0"))
 
 
+def get_unpaid_loan_principal(cur):
+    """
+    Sum, across every ACTIVE or DEFAULTED loan, of principal not yet
+    recovered (the principal portion only - excludes interest, since
+    interest was never part of the contributed pool). Defaulted loans are
+    included because that money is still genuinely unrecovered - it
+    hasn't been formally written off, just unlikely to come back. A
+    cleared loan is excluded since its principal has already returned to
+    the bank. Used for the contribution reconciliation audit.
+    """
+    cur.execute(
+        """SELECT COALESCE(SUM(l.principal - COALESCE(pr.repaid_principal, 0)), 0) as unpaid_principal
+           FROM loans l
+           LEFT JOIN (
+               SELECT loan_id, SUM(principal_component) as repaid_principal
+               FROM loan_repayments GROUP BY loan_id
+           ) pr ON pr.loan_id = l.id
+           WHERE l.status IN ('active', 'defaulted')"""
+    )
+    return cur.fetchone()["unpaid_principal"]
+
+
+def get_current_bank_balance(cur):
+    cur.execute("SELECT amount FROM bank_balance_log ORDER BY recorded_at DESC LIMIT 1")
+    row = cur.fetchone()
+    return row["amount"] if row else Decimal("0")
+
+
+def get_payable_dividends(cur):
+    """
+    Interest actually collected in cash, minus dividends already paid out -
+    the pool of money genuinely available to distribute that hasn't been
+    yet. Same figure the dividends page uses to suggest a starting amount.
+    """
+    cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
+    collected = cur.fetchone()["total"]
+    cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
+    already_paid = cur.fetchone()["total"]
+    return collected - already_paid
+
+
+def compute_funds_reconciliation(cur):
+    """
+    Verifies the group's fundamental accounting identity:
+
+        (money still sitting in the bank) + (loan principal not yet recovered)
+            should equal
+        (total contributions) + (interest collected) + (penalties collected) - (dividends paid out)
+
+    The left side is "where the money physically is right now." The right
+    side is "where it should be, given everything that's come in and gone
+    out." A meaningful non-zero 'unexplained variance' between them is a
+    real red flag - a missing contribution, a stale bank balance entry, a
+    loan issued outside the system, or a payout that wasn't logged
+    correctly. This is NOT the same as simply comparing contributions to
+    principal+bank on their own, which would show a permanent, misleading
+    gap even in a perfectly clean system - interest legitimately adds
+    money beyond what members contributed, and dividends legitimately
+    remove it, so both must be accounted for before any gap means trouble.
+    """
+    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
+    total_contributions = cur.fetchone()["total"]
+
+    unpaid_principal = get_unpaid_loan_principal(cur)
+    bank_balance = get_current_bank_balance(cur)
+    money_accounted_for = unpaid_principal + bank_balance
+
+    cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
+    interest_collected = cur.fetchone()["total"]
+
+    cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM penalties WHERE paid = TRUE")
+    penalties_collected = cur.fetchone()["total"]
+
+    cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
+    dividends_paid = cur.fetchone()["total"]
+
+    expected_accounted_for = total_contributions + interest_collected + penalties_collected - dividends_paid
+    unexplained_variance = money_accounted_for - expected_accounted_for
+
+    return {
+        "total_contributions": total_contributions,
+        "unpaid_principal": unpaid_principal,
+        "bank_balance": bank_balance,
+        "money_accounted_for": money_accounted_for,
+        "interest_collected": interest_collected,
+        "penalties_collected": penalties_collected,
+        "dividends_paid": dividends_paid,
+        "expected_accounted_for": expected_accounted_for,
+        "unexplained_variance": unexplained_variance,
+    }
+
+
 # ---------------------------------------------------------------------------
 # AUTH (signed session cookie, same approach as Elimu Hub's
 # require_tenant_session / require_admin_session helpers)
@@ -875,15 +967,9 @@ def dividends_page(request: Request, session_data=Depends(get_session_optional))
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM dividend_runs ORDER BY computed_at DESC")
             runs = cur.fetchall()
-            cur.execute(
-                "SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments"
-            )
-            total_interest_collected = cur.fetchone()["total"]
-            cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
-            total_already_paid = cur.fetchone()["total"]
+            suggested_pool = get_payable_dividends(cur)
     finally:
         conn.close()
-    suggested_pool = total_interest_collected - total_already_paid
 
     # Group runs sharing the same fiscal_year_label together - several
     # historical entries (or a historical entry plus a computed run) for
@@ -892,7 +978,8 @@ def dividends_page(request: Request, session_data=Depends(get_session_optional))
     for r in runs:
         label = r["fiscal_year_label"]
         if label not in grouped:
-            grouped[label] = {"label": label, "run_count": 0, "total_pool": Decimal("0"), "latest": r["computed_at"]}
+            grouped[label] = {"label": label, "run_count": 0, "total_pool": Decimal("0"),
+                               "latest": r["computed_at"], "any_run_id": r["id"]}
         grouped[label]["run_count"] += 1
         grouped[label]["total_pool"] += r["total_interest_pool"]
         if r["computed_at"] > grouped[label]["latest"]:
@@ -1049,6 +1136,43 @@ def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year
     return RedirectResponse(url=f"/dividends/{run_id}", status_code=303)
 
 
+@app.get("/dividends/year-sheet/{run_id}", response_class=HTMLResponse)
+def dividend_year_sheet(run_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+view+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT fiscal_year_label FROM dividend_runs WHERE id = %s", (run_id,))
+            anchor = cur.fetchone()
+            if not anchor:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Dividend run not found.</p>")
+            label = anchor["fiscal_year_label"]
+
+            cur.execute("SELECT * FROM dividend_runs WHERE fiscal_year_label = %s ORDER BY computed_at", (label,))
+            runs = cur.fetchall()
+            run_ids = [r["id"] for r in runs]
+
+            # One row per member, dividend amounts combined across every run
+            # sharing this fiscal year label.
+            cur.execute(
+                """SELECT m.id as member_id, m.full_name, COALESCE(SUM(d.dividend_amount),0) as total_dividend
+                   FROM members m JOIN dividends d ON d.member_id = m.id
+                   WHERE d.dividend_run_id = ANY(%s)
+                   GROUP BY m.id, m.full_name ORDER BY total_dividend DESC""",
+                (run_ids,),
+            )
+            member_totals = cur.fetchall()
+            grand_total = sum((m["total_dividend"] for m in member_totals), Decimal("0"))
+            total_pool = sum((r["total_interest_pool"] for r in runs), Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_year_sheet.html", {
+        "label": label, "runs": runs, "member_totals": member_totals,
+        "grand_total": grand_total, "total_pool": total_pool, "role": session_data["role"],
+    })
+
+
 @app.get("/dividends/{run_id}", response_class=HTMLResponse)
 def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
@@ -1070,39 +1194,6 @@ def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_
         conn.close()
     return templates.TemplateResponse(request, "dividend_run_detail.html", {
         "run": run, "dividends": dividends, "role": session_data["role"],
-    })
-
-
-@app.get("/dividends/year-sheet", response_class=HTMLResponse)
-def dividend_year_sheet(request: Request, label: str, session_data=Depends(get_session_optional)):
-    if not session_data or session_data["role"] != "chairperson":
-        return RedirectResponse(url="/dashboard?error=Only+the+chairperson+can+view+this", status_code=303)
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM dividend_runs WHERE fiscal_year_label = %s ORDER BY computed_at", (label,))
-            runs = cur.fetchall()
-            if not runs:
-                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>No dividend runs found for this year.</p>")
-            run_ids = [r["id"] for r in runs]
-
-            # One row per member, dividend amounts combined across every run
-            # sharing this fiscal year label.
-            cur.execute(
-                """SELECT m.id as member_id, m.full_name, COALESCE(SUM(d.dividend_amount),0) as total_dividend
-                   FROM members m JOIN dividends d ON d.member_id = m.id
-                   WHERE d.dividend_run_id = ANY(%s)
-                   GROUP BY m.id, m.full_name ORDER BY total_dividend DESC""",
-                (run_ids,),
-            )
-            member_totals = cur.fetchall()
-            grand_total = sum((m["total_dividend"] for m in member_totals), Decimal("0"))
-            total_pool = sum((r["total_interest_pool"] for r in runs), Decimal("0"))
-    finally:
-        conn.close()
-    return templates.TemplateResponse(request, "dividend_year_sheet.html", {
-        "label": label, "runs": runs, "member_totals": member_totals,
-        "grand_total": grand_total, "total_pool": total_pool, "role": session_data["role"],
     })
 
 
@@ -1663,6 +1754,23 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
             settings = get_settings(cur)
             issues = []
 
+            # 0. Funds reconciliation - the single most important check: does
+            # money in the bank plus unrecovered loan principal match what
+            # contributions, interest, and penalties collected (minus
+            # dividends paid) say it should? A meaningful gap here means
+            # something is missing or mis-recorded somewhere in the books.
+            reconciliation = compute_funds_reconciliation(cur)
+            if abs(reconciliation["unexplained_variance"]) > Decimal("1000"):
+                issues.append({
+                    "severity": "error",
+                    "category": "Unexplained funds variance",
+                    "detail": f"Money accounted for (bank + unpaid principal) is "
+                              f"{reconciliation['money_accounted_for']:,.2f}, but contributions + interest + "
+                              f"penalties - dividends says it should be {reconciliation['expected_accounted_for']:,.2f} "
+                              f"- a gap of {reconciliation['unexplained_variance']:,.2f}. Check the bank balance is "
+                              f"current, and that no contribution, loan, or dividend was entered outside the system.",
+                })
+
             # 1. Possible duplicate contributions: same member, same month, same
             # amount, entered more than once (top-ups of a DIFFERENT amount in
             # the same month are normal and not flagged).
@@ -2005,6 +2113,11 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
             total_contributions = cur.fetchone()["total"]
 
+            # Financial audit figures - chairperson sees the reconciliation
+            # check, chairperson and treasurer both see payable dividends.
+            reconciliation = compute_funds_reconciliation(cur)
+            payable_dividends = get_payable_dividends(cur)
+
             cur.execute(
                 "SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends"
             )
@@ -2077,6 +2190,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         "officer_name": officer_name, "greeting": time_greeting(),
         "member_count": member_count,
         "total_contributions": total_contributions,
+        "reconciliation": reconciliation, "payable_dividends": payable_dividends,
         "total_loans_outstanding": total_loans_outstanding,
         "total_loans_issued": total_loans_issued,
         "expected_interest_total": expected_interest_total,

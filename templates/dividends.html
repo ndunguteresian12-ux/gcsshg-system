@@ -58,7 +58,7 @@
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(g.total_pool) }}</td>
       <td>{{ g.run_count }}{% if g.run_count > 1 %} (combined){% endif %}</td>
       <td>{{ g.latest.strftime('%d %b %Y') }}</td>
-      <td><a class="row-link" href="/dividends/year-sheet?label={{ g.label|urlencode }}">View sheet &rarr;</a></td>
+      <td><a class="row-link" href="/dividends/year-sheet/{{ g.any_run_id }}">View sheet &rarr;</a></td>
     </tr>
     {% endfor %}
   </table>

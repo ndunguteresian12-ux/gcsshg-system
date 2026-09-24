@@ -98,6 +98,33 @@
   </div>
 </div>
 
+{% if role in ['chairperson', 'treasurer'] %}
+<div class="section-title">
+  <h2 style="font-size:1rem;">Financial audit</h2>
+</div>
+<div class="stat-grid">
+  {% if role == 'chairperson' %}
+  <div class="stat-card" title="Money in the bank plus unrecovered loan principal, compared against contributions plus interest plus penalties collected minus dividends paid. A meaningful gap here - not a small rounding difference - means something is missing or mis-recorded.">
+    <div class="stat-label">Unexplained variance</div>
+    <div class="stat-value figure" style="color: {{ 'var(--red)' if (reconciliation.unexplained_variance > 1000 or reconciliation.unexplained_variance < -1000) else 'var(--forest-dark)' }};">
+      {{ '+' if reconciliation.unexplained_variance >= 0 else '' }}{{ "{:,.0f}".format(reconciliation.unexplained_variance) }}
+    </div>
+    <div class="muted" style="font-size:0.72rem; margin-top:0.3rem; line-height:1.4;">
+      Bank {{ "{:,.0f}".format(reconciliation.bank_balance) }} + unpaid principal {{ "{:,.0f}".format(reconciliation.unpaid_principal) }}
+      = {{ "{:,.0f}".format(reconciliation.money_accounted_for) }}<br>
+      vs. contributions {{ "{:,.0f}".format(reconciliation.total_contributions) }} + interest {{ "{:,.0f}".format(reconciliation.interest_collected) }}
+      + penalties {{ "{:,.0f}".format(reconciliation.penalties_collected) }} - dividends {{ "{:,.0f}".format(reconciliation.dividends_paid) }}
+      = {{ "{:,.0f}".format(reconciliation.expected_accounted_for) }}
+    </div>
+  </div>
+  {% endif %}
+  <div class="stat-card solid-gold" title="Interest actually collected in cash, minus dividends already paid out - what's genuinely available to distribute that hasn't been yet">
+    <div class="stat-label">Payable dividends</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(payable_dividends) }}</div>
+  </div>
+</div>
+{% endif %}
+
 <div class="chart-grid">
   <div class="card">
     <h2>Monthly contributions</h2>
