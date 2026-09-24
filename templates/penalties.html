@@ -31,6 +31,23 @@
   </div>
 </div>
 
+{% if role == 'chairperson' %}
+<div class="card">
+  <h2>Recalculate penalties</h2>
+  <p class="muted">
+    If a loan's due date or terms were edited, or penalty settings changed, after penalties were
+    already charged, stale over-charges can build up - the regular check only ever adds new
+    penalties, it never removes outdated ones. This wipes every unpaid, unwaived penalty and rebuilds
+    the correct set from scratch, using each member's current contribution standing and each loan's
+    current terms. Penalties already marked paid or waived are never touched.
+  </p>
+  <form method="post" action="/admin/recalculate-penalties"
+        onsubmit="return confirm('This removes every unpaid, unwaived penalty and recalculates them fresh from current data. Paid and waived penalties are untouched. Continue?');">
+    <button type="submit" class="btn-secondary">Recalculate all penalties</button>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   {% if penalties %}
   <table>

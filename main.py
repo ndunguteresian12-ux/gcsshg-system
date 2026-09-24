@@ -478,9 +478,17 @@ def get_unpaid_loan_principal(cur):
 
 
 def get_current_bank_balance(cur):
-    cur.execute("SELECT amount FROM bank_balance_log ORDER BY recorded_at DESC LIMIT 1")
-    row = cur.fetchone()
-    return row["amount"] if row else Decimal("0")
+    """
+    The bank balance is a running ledger: deposits add, withdrawals
+    subtract. This is the sum of everything ever recorded, not just the
+    most recent entry.
+    """
+    cur.execute(
+        """SELECT COALESCE(SUM(
+               CASE WHEN transaction_type = 'withdrawal' THEN -amount ELSE amount END
+           ), 0) as total FROM bank_balance_log"""
+    )
+    return cur.fetchone()["total"]
 
 
 def get_payable_dividends(cur):
@@ -1209,28 +1217,35 @@ def bank_balance_page(request: Request, session_data=Depends(get_session_optiona
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT b.*, u.full_name as recorded_by_name FROM bank_balance_log b
-                   LEFT JOIN users u ON u.id = b.recorded_by ORDER BY b.recorded_at DESC"""
+                   LEFT JOIN users u ON u.id = b.recorded_by ORDER BY b.recorded_at ASC"""
             )
-            history = cur.fetchall()
+            oldest_first = cur.fetchall()
+            running = Decimal("0")
+            for h in oldest_first:
+                running += -h["amount"] if h["transaction_type"] == "withdrawal" else h["amount"]
+                h["running_balance"] = running
+            history = list(reversed(oldest_first))
+            current_balance = running
     finally:
         conn.close()
-    current_balance = history[0]["amount"] if history else Decimal("0")
     return templates.TemplateResponse(request, "bank_balance.html", {
         "history": history, "current_balance": current_balance, "role": session_data["role"],
     })
 
 
 @app.post("/bank-balance/update")
-def bank_balance_update(amount: float = Form(...), note: str = Form(""),
-                         session_data=Depends(get_session_optional)):
+def bank_balance_update(amount: float = Form(...), transaction_type: str = Form("deposit"),
+                         note: str = Form(""), session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/bank-balance?error=Only+the+chairperson+or+treasurer+can+update+this", status_code=303)
+    if transaction_type not in ("deposit", "withdrawal"):
+        transaction_type = "deposit"
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO bank_balance_log (amount, note, recorded_by) VALUES (%s, %s, %s)",
-                (amount, note or None, session_data["user_id"]),
+                "INSERT INTO bank_balance_log (amount, transaction_type, note, recorded_by) VALUES (%s, %s, %s, %s)",
+                (amount, transaction_type, note or None, session_data["user_id"]),
             )
             conn.commit()
     finally:
@@ -3187,86 +3202,120 @@ def settings_update(
     return RedirectResponse(url="/settings?error=Settings+saved", status_code=303)
 
 
-@app.post("/admin/run-penalty-check")
-def run_penalty_check(session_data=Depends(get_session_optional)):
+def generate_penalties(cur, settings, today):
     """
     Scans overdue loans and missed monthly contributions, inserting penalty
     records for any period not already charged. Safe to run repeatedly -
     the unique constraint on (member_id, penalty_type, reference_id, period_label)
-    prevents double-charging the same month twice.
+    prevents double-charging the same period twice. Shared by the regular
+    check (additive) and the recalculate tool (wipe unpaid/unwaived first,
+    then call this to rebuild fresh).
     """
+    inserted = 0
+    penalty_amount = settings["penalty_amount"]
+
+    # --- Overdue loan penalties ---
+    cur.execute("SELECT * FROM loans WHERE status = 'active' AND due_date IS NOT NULL")
+    loans = cur.fetchall()
+    for loan in loans:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
+            (loan["id"],),
+        )
+        repaid = cur.fetchone()["repaid"]
+        terms = terms_from_loan_row(loan)
+        balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], today, terms)
+        if is_loan_overdue(loan["due_date"], balance, today):
+            months_overdue = loan_overdue_months(loan["due_date"], today)
+            for i in range(months_overdue):
+                period_month = add_months(loan["due_date"], i)
+                period_label = f"{period_month.year}-{period_month.month:02d}"
+                cur.execute(
+                    """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
+                       VALUES (%s, 'overdue_loan', %s, %s, %s)
+                       ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
+                    (loan["member_id"], loan["id"], period_label, penalty_amount),
+                )
+                if cur.rowcount:
+                    inserted += 1
+
+    # --- Missed monthly contribution penalties ---
+    # Cumulative check: a member is only penalized if their TOTAL contribution
+    # to date falls short of (min_monthly_contribution x months elapsed since
+    # joining). Someone who paid 1000 in March and 0 in April is NOT penalized -
+    # their running total already covers both months. This avoids fining
+    # members who front-load or pay unevenly but keep pace overall.
+    cur.execute("SELECT id, join_date FROM members WHERE status = 'active'")
+    members = cur.fetchall()
+    min_contribution = settings["min_monthly_contribution"]
+    for m in members:
+        standing = compute_contribution_standing(cur, m["id"], m["join_date"], min_contribution, today)
+        if standing["is_current"]:
+            continue  # caught up overall - no penalty, regardless of which months were light
+
+        shortfall_months = math.ceil(standing["shortfall"] / min_contribution)
+
+        cur.execute(
+            "SELECT COUNT(*) as count FROM penalties WHERE member_id = %s AND penalty_type = 'missed_contribution'",
+            (m["id"],),
+        )
+        already_charged = cur.fetchone()["count"]
+
+        for n in range(already_charged + 1, shortfall_months + 1):
+            period_label = f"shortfall-{n}"
+            cur.execute(
+                """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
+                   VALUES (%s, 'missed_contribution', NULL, %s, %s)
+                   ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
+                (m["id"], period_label, penalty_amount),
+            )
+            if cur.rowcount:
+                inserted += 1
+    return inserted
+
+
+@app.post("/admin/run-penalty-check")
+def run_penalty_check(session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
         return RedirectResponse(url="/penalties?error=Only+the+chairperson+or+treasurer+can+run+this+check", status_code=303)
     conn = get_conn()
-    inserted = 0
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            penalty_amount = settings["penalty_amount"]
-            today = date.today()
-
-            # --- Overdue loan penalties ---
-            cur.execute("SELECT * FROM loans WHERE status = 'active' AND due_date IS NOT NULL")
-            loans = cur.fetchall()
-            for loan in loans:
-                cur.execute(
-                    "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
-                    (loan["id"],),
-                )
-                repaid = cur.fetchone()["repaid"]
-                terms = terms_from_loan_row(loan)
-                balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], today, terms)
-                if is_loan_overdue(loan["due_date"], balance, today):
-                    months_overdue = loan_overdue_months(loan["due_date"], today)
-                    for i in range(months_overdue):
-                        period_month = add_months(loan["due_date"], i)
-                        period_label = f"{period_month.year}-{period_month.month:02d}"
-                        cur.execute(
-                            """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
-                               VALUES (%s, 'overdue_loan', %s, %s, %s)
-                               ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
-                            (loan["member_id"], loan["id"], period_label, penalty_amount),
-                        )
-                        if cur.rowcount:
-                            inserted += 1
-
-            # --- Missed monthly contribution penalties ---
-            # Cumulative check: a member is only penalized if their TOTAL contribution
-            # to date falls short of (min_monthly_contribution x months elapsed since
-            # joining). Someone who paid 1000 in March and 0 in April is NOT penalized -
-            # their running total already covers both months. This avoids fining
-            # members who front-load or pay unevenly but keep pace overall.
-            cur.execute("SELECT id, join_date FROM members WHERE status = 'active'")
-            members = cur.fetchall()
-            current_month_start = today.replace(day=1)
-            min_contribution = settings["min_monthly_contribution"]
-            for m in members:
-                standing = compute_contribution_standing(cur, m["id"], m["join_date"], min_contribution, today)
-                if standing["is_current"]:
-                    continue  # caught up overall - no penalty, regardless of which months were light
-
-                shortfall_months = math.ceil(standing["shortfall"] / min_contribution)
-
-                cur.execute(
-                    "SELECT COUNT(*) as count FROM penalties WHERE member_id = %s AND penalty_type = 'missed_contribution'",
-                    (m["id"],),
-                )
-                already_charged = cur.fetchone()["count"]
-
-                for n in range(already_charged + 1, shortfall_months + 1):
-                    period_label = f"shortfall-{n}"
-                    cur.execute(
-                        """INSERT INTO penalties (member_id, penalty_type, reference_id, period_label, amount)
-                           VALUES (%s, 'missed_contribution', NULL, %s, %s)
-                           ON CONFLICT (member_id, penalty_type, reference_id, period_label) DO NOTHING""",
-                        (m["id"], period_label, penalty_amount),
-                    )
-                    if cur.rowcount:
-                        inserted += 1
+            inserted = generate_penalties(cur, settings, date.today())
             conn.commit()
     finally:
         conn.close()
     return RedirectResponse(url=f"/penalties?error=Penalty+check+complete+-+{inserted}+new+penalties+recorded", status_code=303)
+
+
+@app.post("/admin/recalculate-penalties")
+def recalculate_penalties(session_data=Depends(get_session_optional)):
+    """
+    Fixes drift: if a loan's due date or terms changed after penalties were
+    already charged under the old terms, or settings changed, stale
+    over-charges can accumulate since the regular check only ever adds new
+    penalties, never removes outdated ones. This wipes every UNPAID,
+    UNWAIVED penalty (never touching ones already paid or waived - that's
+    real settled history) and rebuilds the correct set from scratch using
+    current data.
+    """
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+can+recalculate+penalties", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM penalties WHERE paid = FALSE AND waived = FALSE")
+            removed = cur.rowcount
+            settings = get_settings(cur)
+            inserted = generate_penalties(cur, settings, date.today())
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(
+        url=f"/penalties?error=Recalculated+-+removed+{removed}+stale+penalty+entries,+rebuilt+{inserted}+correct+ones",
+        status_code=303,
+    )
 
 
 @app.get("/penalties", response_class=HTMLResponse)
