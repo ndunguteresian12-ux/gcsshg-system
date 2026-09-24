@@ -1235,6 +1235,20 @@ def bank_balance_update(amount: float = Form(...), note: str = Form(""),
     return RedirectResponse(url="/bank-balance", status_code=303)
 
 
+@app.post("/bank-balance/{entry_id}/delete")
+def bank_balance_delete(entry_id: int, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/bank-balance?error=Only+the+chairperson+can+delete+a+bank+balance+entry", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM bank_balance_log WHERE id = %s", (entry_id,))
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/bank-balance?error=Entry+deleted", status_code=303)
+
+
 @app.get("/send-email", response_class=HTMLResponse)
 def send_email_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):

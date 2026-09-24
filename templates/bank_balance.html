@@ -23,6 +23,10 @@
     <div class="stat-stamp">B</div>
     <div class="stat-label">Current balance</div>
     <div class="stat-value figure" style="font-size:1.9rem;">{{ "{:,.0f}".format(current_balance) }}</div>
+    <div class="muted" style="font-size:0.75rem; margin-top:0.3rem;">
+      Money already collected from members and deposited here - this is where a portion of contributions
+      physically sits, not a separate pot on top of them.
+    </div>
   </div>
 </div>
 
@@ -46,13 +50,22 @@
   <h2>History</h2>
   {% if history %}
   <table>
-    <tr><th>Date</th><th class="figure-head">Amount</th><th>Note</th><th>Recorded by</th></tr>
+    <tr><th>Date</th><th class="figure-head">Amount</th><th>Note</th><th>Recorded by</th>{% if role == 'chairperson' %}<th></th>{% endif %}</tr>
     {% for h in history %}
     <tr>
       <td>{{ h.recorded_at.strftime('%d %b %Y') }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(h.amount) }}</td>
       <td>{{ h.note or "-" }}</td>
       <td>{{ h.recorded_by_name or "-" }}</td>
+      {% if role == 'chairperson' %}
+      <td>
+        <form method="post" action="/bank-balance/{{ h.id }}/delete"
+              onsubmit="return confirm('Delete this balance entry of KES {{ '{:,.0f}'.format(h.amount) }} from {{ h.recorded_at.strftime('%d %b %Y') }}? This cannot be undone.');"
+              style="margin:0;">
+          <button type="submit" class="btn-secondary" style="margin:0; padding:0.25rem 0.5rem; font-size:0.75rem; width:auto;">Delete</button>
+        </form>
+      </td>
+      {% endif %}
     </tr>
     {% endfor %}
   </table>

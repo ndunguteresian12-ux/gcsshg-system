@@ -104,15 +104,15 @@
 </div>
 <div class="stat-grid">
   {% if role == 'chairperson' %}
-  <div class="stat-card" title="Money in the bank plus unrecovered loan principal, compared against contributions plus interest plus penalties collected minus dividends paid. A meaningful gap here - not a small rounding difference - means something is missing or mis-recorded.">
+  <div class="stat-card" title="Where the money physically is right now (bank + unrecovered loan principal) compared against where it should be based on all-time history (contributions + interest + penalties collected - dividends paid). These are two separate totals being checked against each other, not added together - bank balance is already part of what members contributed, not extra money on top of it. A meaningful gap - not a small rounding difference - means something is missing or mis-recorded.">
     <div class="stat-label">Unexplained variance</div>
     <div class="stat-value figure" style="color: {{ 'var(--red)' if (reconciliation.unexplained_variance > 1000 or reconciliation.unexplained_variance < -1000) else 'var(--forest-dark)' }};">
       {{ '+' if reconciliation.unexplained_variance >= 0 else '' }}{{ "{:,.0f}".format(reconciliation.unexplained_variance) }}
     </div>
     <div class="muted" style="font-size:0.72rem; margin-top:0.3rem; line-height:1.4;">
-      Bank {{ "{:,.0f}".format(reconciliation.bank_balance) }} + unpaid principal {{ "{:,.0f}".format(reconciliation.unpaid_principal) }}
+      Where the money is now: bank {{ "{:,.0f}".format(reconciliation.bank_balance) }} + unpaid principal {{ "{:,.0f}".format(reconciliation.unpaid_principal) }}
       = {{ "{:,.0f}".format(reconciliation.money_accounted_for) }}<br>
-      vs. contributions {{ "{:,.0f}".format(reconciliation.total_contributions) }} + interest {{ "{:,.0f}".format(reconciliation.interest_collected) }}
+      Where it should be: contributions {{ "{:,.0f}".format(reconciliation.total_contributions) }} + interest {{ "{:,.0f}".format(reconciliation.interest_collected) }}
       + penalties {{ "{:,.0f}".format(reconciliation.penalties_collected) }} - dividends {{ "{:,.0f}".format(reconciliation.dividends_paid) }}
       = {{ "{:,.0f}".format(reconciliation.expected_accounted_for) }}
     </div>
