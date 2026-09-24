@@ -104,17 +104,20 @@
 </div>
 <div class="stat-grid">
   {% if role == 'chairperson' %}
-  <div class="stat-card" title="Where the money physically is right now (bank + unrecovered loan principal) compared against where it should be based on all-time history (contributions + interest + penalties collected - dividends paid). These are two separate totals being checked against each other, not added together - bank balance is already part of what members contributed, not extra money on top of it. A meaningful gap - not a small rounding difference - means something is missing or mis-recorded.">
-    <div class="stat-label">Unexplained variance</div>
-    <div class="stat-value figure" style="color: {{ 'var(--red)' if (reconciliation.unexplained_variance > 1000 or reconciliation.unexplained_variance < -1000) else 'var(--forest-dark)' }};">
-      {{ '+' if reconciliation.unexplained_variance >= 0 else '' }}{{ "{:,.0f}".format(reconciliation.unexplained_variance) }}
+  <div class="stat-card" title="Bank balance plus unpaid loan principal should be at least total contributions. A surplus is healthy - it's retained interest profit not yet paid out as dividends. A deficit means money that should exist doesn't.">
+    <div class="stat-label">{{ "Surplus over contributions" if reconciliation.surplus >= 0 else "Deficit below contributions" }}</div>
+    <div class="stat-value figure" style="color: {{ 'var(--red)' if reconciliation.surplus < -1000 else 'var(--forest-dark)' }};">
+      {{ '+' if reconciliation.surplus >= 0 else '' }}{{ "{:,.0f}".format(reconciliation.surplus) }}
     </div>
     <div class="muted" style="font-size:0.72rem; margin-top:0.3rem; line-height:1.4;">
-      Where the money is now: bank {{ "{:,.0f}".format(reconciliation.bank_balance) }} + unpaid principal {{ "{:,.0f}".format(reconciliation.unpaid_principal) }}
-      = {{ "{:,.0f}".format(reconciliation.money_accounted_for) }}<br>
-      Where it should be: contributions {{ "{:,.0f}".format(reconciliation.total_contributions) }} + interest {{ "{:,.0f}".format(reconciliation.interest_collected) }}
-      + penalties {{ "{:,.0f}".format(reconciliation.penalties_collected) }} - dividends {{ "{:,.0f}".format(reconciliation.dividends_paid) }}
-      = {{ "{:,.0f}".format(reconciliation.expected_accounted_for) }}
+      Bank {{ "{:,.0f}".format(reconciliation.bank_balance) }} + unpaid principal {{ "{:,.0f}".format(reconciliation.unpaid_principal) }}
+      = {{ "{:,.0f}".format(reconciliation.money_accounted_for) }}, vs. contributions {{ "{:,.0f}".format(reconciliation.total_contributions) }}.
+      {% if reconciliation.surplus < 0 %}
+      <strong style="color: var(--red);">Negative - investigate: check the bank balance is current and every contribution/loan is logged.</strong>
+      {% else %}
+      Expected retained profit so far (interest + penalties - dividends): {{ "{:,.0f}".format(reconciliation.retained_interest_expected) }}.
+      If the surplus looks much smaller than that, the bank balance entry is probably due for a recheck.
+      {% endif %}
     </div>
   </div>
   {% endif %}

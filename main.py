@@ -498,22 +498,26 @@ def get_payable_dividends(cur):
 
 def compute_funds_reconciliation(cur):
     """
-    Verifies the group's fundamental accounting identity:
+    The core check: money sitting in the bank plus loan principal not yet
+    recovered should be AT LEAST what members have contributed.
 
-        (money still sitting in the bank) + (loan principal not yet recovered)
-            should equal
-        (total contributions) + (interest collected) + (penalties collected) - (dividends paid out)
+        surplus = (bank balance + unpaid principal) - total contributions
 
-    The left side is "where the money physically is right now." The right
-    side is "where it should be, given everything that's come in and gone
-    out." A meaningful non-zero 'unexplained variance' between them is a
-    real red flag - a missing contribution, a stale bank balance entry, a
-    loan issued outside the system, or a payout that wasn't logged
-    correctly. This is NOT the same as simply comparing contributions to
-    principal+bank on their own, which would show a permanent, misleading
-    gap even in a perfectly clean system - interest legitimately adds
-    money beyond what members contributed, and dividends legitimately
-    remove it, so both must be accounted for before any gap means trouble.
+    A surplus (positive) is healthy - it reflects interest earned that
+    hasn't been paid out as dividends yet, not a problem. A deficit
+    (negative) is the real red flag: assets are smaller than what members
+    put in, meaning money that should exist doesn't - a missing
+    contribution, an unlogged loan, or a bank balance entry that's wrong.
+
+    This deliberately does NOT try to net interest, penalties, and
+    dividends into the check itself to force it to exactly zero - those
+    figures depend on inputs (penalties marked paid, an up-to-date bank
+    balance) that aren't necessarily kept current, so baking them into a
+    single "should be zero" number risks looking precise while being
+    misleading. They're still shown for context: if the surplus looks
+    smaller than expected given interest collected so far, that's usually
+    a sign the bank balance entry is stale and needs rechecking against
+    the real statement, not that money is missing.
     """
     cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
     total_contributions = cur.fetchone()["total"]
@@ -521,6 +525,7 @@ def compute_funds_reconciliation(cur):
     unpaid_principal = get_unpaid_loan_principal(cur)
     bank_balance = get_current_bank_balance(cur)
     money_accounted_for = unpaid_principal + bank_balance
+    surplus = money_accounted_for - total_contributions
 
     cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
     interest_collected = cur.fetchone()["total"]
@@ -530,20 +535,18 @@ def compute_funds_reconciliation(cur):
 
     cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
     dividends_paid = cur.fetchone()["total"]
-
-    expected_accounted_for = total_contributions + interest_collected + penalties_collected - dividends_paid
-    unexplained_variance = money_accounted_for - expected_accounted_for
+    retained_interest_expected = interest_collected + penalties_collected - dividends_paid
 
     return {
         "total_contributions": total_contributions,
         "unpaid_principal": unpaid_principal,
         "bank_balance": bank_balance,
         "money_accounted_for": money_accounted_for,
+        "surplus": surplus,
         "interest_collected": interest_collected,
         "penalties_collected": penalties_collected,
         "dividends_paid": dividends_paid,
-        "expected_accounted_for": expected_accounted_for,
-        "unexplained_variance": unexplained_variance,
+        "retained_interest_expected": retained_interest_expected,
     }
 
 
@@ -1768,21 +1771,21 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
             settings = get_settings(cur)
             issues = []
 
-            # 0. Funds reconciliation - the single most important check: does
-            # money in the bank plus unrecovered loan principal match what
-            # contributions, interest, and penalties collected (minus
-            # dividends paid) say it should? A meaningful gap here means
-            # something is missing or mis-recorded somewhere in the books.
+            # 0. Funds check - money in the bank plus unrecovered loan
+            # principal should be at least what members have contributed. A
+            # surplus is healthy (retained, undistributed interest profit).
+            # A deficit means money that should exist doesn't.
             reconciliation = compute_funds_reconciliation(cur)
-            if abs(reconciliation["unexplained_variance"]) > Decimal("1000"):
+            if reconciliation["surplus"] < Decimal("-1000"):
                 issues.append({
                     "severity": "error",
-                    "category": "Unexplained funds variance",
-                    "detail": f"Money accounted for (bank + unpaid principal) is "
-                              f"{reconciliation['money_accounted_for']:,.2f}, but contributions + interest + "
-                              f"penalties - dividends says it should be {reconciliation['expected_accounted_for']:,.2f} "
-                              f"- a gap of {reconciliation['unexplained_variance']:,.2f}. Check the bank balance is "
-                              f"current, and that no contribution, loan, or dividend was entered outside the system.",
+                    "category": "Funds shortfall - assets below contributions",
+                    "detail": f"Bank balance ({reconciliation['bank_balance']:,.2f}) plus unpaid loan principal "
+                              f"({reconciliation['unpaid_principal']:,.2f}) totals "
+                              f"{reconciliation['money_accounted_for']:,.2f}, which is "
+                              f"{abs(reconciliation['surplus']):,.2f} SHORT of total contributions "
+                              f"({reconciliation['total_contributions']:,.2f}). Check the bank balance is current, "
+                              f"and that no contribution or loan was entered outside the system.",
                 })
 
             # 1. Possible duplicate contributions: same member, same month, same
