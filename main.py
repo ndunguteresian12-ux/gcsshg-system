@@ -645,6 +645,7 @@ class RepaymentCreate(BaseModel):
 
 class DividendRunRequest(BaseModel):
     fiscal_year_label: str
+    fiscal_year_start_year: int
     total_interest_pool: Decimal
 
 
@@ -897,6 +898,44 @@ def record_repayment(payload: RepaymentCreate, officer=Depends(require_loan_offi
 # DIVIDENDS
 # ---------------------------------------------------------------------------
 
+def build_dividend_month_breakdown(cur, member_id, period_start, period_end, start_month, fiscal_length):
+    """
+    Month-by-month detail of exactly how one member's weighted contribution
+    was built: every month of the fiscal year, in order, with what they
+    contributed (0 if nothing), that month's weight, and the resulting
+    weighted value - the clearest possible answer to "why did I get this
+    dividend amount," since it's the same arithmetic run_dividends uses,
+    just shown one line at a time instead of collapsed into one number.
+    """
+    cur.execute(
+        "SELECT EXTRACT(MONTH FROM contribution_month)::int as mon, SUM(amount) as amt "
+        "FROM contributions WHERE member_id = %s AND contribution_month >= %s AND contribution_month < %s "
+        "GROUP BY mon",
+        (member_id, period_start, period_end),
+    )
+    amounts_by_month = {r["mon"]: r["amt"] for r in cur.fetchall()}
+
+    seq = fiscal_month_sequence(start_month, fiscal_length)
+    rows = []
+    total_contribution = Decimal("0")
+    total_weighted = Decimal("0")
+    cursor_date = period_start
+    for i, cal_month in enumerate(seq):
+        position = i + 1
+        weight = month_weight(position, fiscal_length)
+        amount = amounts_by_month.get(cal_month, Decimal("0"))
+        weighted_value = amount * weight
+        rows.append({
+            "month_label": cursor_date.strftime("%b %Y"), "position": position,
+            "weight": weight, "amount": amount, "weighted_value": weighted_value,
+        })
+        total_contribution += amount
+        total_weighted += weighted_value
+        cursor_date = add_months(cursor_date, 1)
+
+    return {"rows": rows, "total_contribution": total_contribution, "total_weighted": total_weighted}
+
+
 def compute_dividend_records(cur, period_start, period_end):
     """
     period_start (inclusive) to period_end (exclusive) - the exact fiscal
@@ -925,16 +964,18 @@ def compute_dividend_records(cur, period_start, period_end):
 
 def save_dividend_run(cur, fiscal_year_label, total_interest_pool, computed_by, results,
                        gross_pool=None, admin_amount=Decimal("0"), transaction_cost_amount=Decimal("0"),
-                       admin_label="Administration", transaction_label="Transaction costs"):
+                       admin_label="Administration", transaction_label="Transaction costs",
+                       period_start=None, period_end=None):
     total_weighted = sum((r.weighted_contribution for r in results), Decimal("0"))
     cur.execute(
         """INSERT INTO dividend_runs (fiscal_year_label, total_interest_pool,
                                        total_weighted_contributions, computed_by,
                                        gross_pool, admin_amount, transaction_cost_amount,
-                                       admin_label, transaction_label)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                       admin_label, transaction_label, period_start, period_end)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
         (fiscal_year_label, total_interest_pool, total_weighted, computed_by,
-         gross_pool, admin_amount, transaction_cost_amount, admin_label, transaction_label),
+         gross_pool, admin_amount, transaction_cost_amount, admin_label, transaction_label,
+         period_start, period_end),
     )
     run_id = cur.fetchone()["id"]
     for r in results:
@@ -953,13 +994,16 @@ def run_dividend_calculation(payload: DividendRunRequest, chair=Depends(require_
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            records = compute_dividend_records(cur)
+            period_start = date(payload.fiscal_year_start_year, settings["fiscal_year_start_month"], 1)
+            period_end = add_months(period_start, settings["fiscal_year_length_months"])
+            records = compute_dividend_records(cur, period_start, period_end)
             results = run_dividends(
                 records, payload.total_interest_pool,
                 settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
             )
             run_id = save_dividend_run(cur, payload.fiscal_year_label, payload.total_interest_pool,
-                                        chair["user_id"], results)
+                                        chair["user_id"], results,
+                                        period_start=period_start, period_end=period_end)
             conn.commit()
             return {
                 "dividend_run_id": run_id,
@@ -1140,7 +1184,8 @@ def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year
                                         gross_pool=gross, admin_amount=admin_amount,
                                         transaction_cost_amount=transaction_amount,
                                         admin_label=settings["dividend_admin_label"],
-                                        transaction_label=settings["dividend_transaction_label"])
+                                        transaction_label=settings["dividend_transaction_label"],
+                                        period_start=period_start, period_end=period_end)
             conn.commit()
     finally:
         conn.close()
@@ -1205,6 +1250,47 @@ def dividend_run_detail(run_id: int, request: Request, session_data=Depends(get_
         conn.close()
     return templates.TemplateResponse(request, "dividend_run_detail.html", {
         "run": run, "dividends": dividends, "role": session_data["role"],
+    })
+
+
+@app.get("/dividends/{run_id}/member/{member_id}", response_class=HTMLResponse)
+def dividend_member_breakdown(run_id: int, member_id: int, request: Request,
+                               session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dividend_runs WHERE id = %s", (run_id,))
+            run = cur.fetchone()
+            if not run:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Run not found.</p>")
+            if not run["period_start"] or not run["period_end"]:
+                return HTMLResponse(
+                    "<p style='font-family:sans-serif;padding:2rem'>"
+                    "This run was saved before month-by-month breakdowns were tracked, so the exact "
+                    "period it used isn't on record. Its total and weighted contribution figures are "
+                    "still shown on the run's own page."
+                    "</p>"
+                )
+            cur.execute(
+                """SELECT d.*, m.full_name FROM dividends d JOIN members m ON m.id = d.member_id
+                   WHERE d.dividend_run_id = %s AND d.member_id = %s""",
+                (run_id, member_id),
+            )
+            dividend = cur.fetchone()
+            if not dividend:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>No dividend record found for this member on this run.</p>")
+
+            settings = get_settings(cur)
+            breakdown = build_dividend_month_breakdown(
+                cur, member_id, run["period_start"], run["period_end"],
+                settings["fiscal_year_start_month"], settings["fiscal_year_length_months"],
+            )
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_member_breakdown.html", {
+        "run": run, "dividend": dividend, "breakdown": breakdown, "role": session_data["role"],
     })
 
 

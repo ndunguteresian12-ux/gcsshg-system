@@ -26,15 +26,22 @@
 
 <div class="card">
   <table>
-    <tr><th>Member</th><th class="figure-head">Contributed</th><th class="figure-head">Dividend</th></tr>
+    <tr><th>Member</th><th class="figure-head">Contributed</th><th class="figure-head">Weighted</th><th class="figure-head">Dividend</th><th class="no-print"></th></tr>
     {% for d in dividends %}
     <tr>
       <td>{{ d.full_name }}</td>
       <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(d.total_contribution) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(d.weighted_contribution) }}</td>
       <td class="figure" style="text-align:right; color: var(--gold); font-weight:600;">{{ "{:,.2f}".format(d.dividend_amount) }}</td>
+      <td class="no-print"><a class="row-link" href="/dividends/{{ run.id }}/member/{{ d.member_id }}">Show calculation &rarr;</a></td>
     </tr>
     {% endfor %}
   </table>
+  <p class="muted" style="margin-top:0.6rem;">
+    "Weighted" reflects when each month's contribution was made - earlier months in the fiscal year
+    carry more weight than later ones, since that money has been working for the group longer.
+    Click "Show calculation" for any member to see the exact month-by-month math.
+  </p>
 </div>
 
 {% endblock %}

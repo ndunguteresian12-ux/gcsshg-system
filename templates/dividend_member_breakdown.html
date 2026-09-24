@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Dividend calculation - {{ dividend.full_name }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/dividends/{{ run.id }}">&larr; {{ run.fiscal_year_label }}</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card">
+  <a href="/dividends/{{ run.id }}" class="row-link no-print">&larr; Back to {{ run.fiscal_year_label }}</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">{{ dividend.full_name }} - dividend calculation</h1>
+  <div class="muted">{{ run.fiscal_year_label }} &middot; computed {{ run.computed_at.strftime('%d %b %Y') }}</div>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="card">
+  <p class="muted" style="margin-top:0;">
+    Each month's contribution is multiplied by a weight based on how early in the fiscal year it fell -
+    the first month carries the highest weight, the last month the lowest, since money contributed
+    earlier has been working for the group longer. Every member's dividend share is their weighted
+    total divided by everyone's combined weighted total.
+  </p>
+  <table>
+    <tr><th>Month</th><th class="figure-head">Contributed</th><th class="figure-head">Weight</th><th class="figure-head">Weighted value</th></tr>
+    {% for row in breakdown.rows %}
+    <tr>
+      <td>{{ row.month_label }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(row.amount) }}</td>
+      <td class="figure" style="text-align:right;">&times;{{ row.weight }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(row.weighted_value) }}</td>
+    </tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--forest); font-weight:700;">
+      <td>Total</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(breakdown.total_contribution) }}</td>
+      <td></td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(breakdown.total_weighted) }}</td>
+    </tr>
+  </table>
+</div>
+
+<div class="stat-grid">
+  <div class="stat-card">
+    <div class="stat-label">Your weighted contribution</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(dividend.weighted_contribution) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Group's total weighted contributions</div>
+    <div class="stat-value figure">{{ "{:,.0f}".format(run.total_weighted_contributions) }}</div>
+  </div>
+  <div class="stat-card solid-gold">
+    <div class="stat-label">Your dividend</div>
+    <div class="stat-value figure">{{ "{:,.2f}".format(dividend.dividend_amount) }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <p class="muted" style="margin:0;">
+    Your share = {{ "{:,.0f}".format(dividend.weighted_contribution) }} &divide;
+    {{ "{:,.0f}".format(run.total_weighted_contributions) }} = your weighted contribution as a
+    fraction of everyone's combined total, multiplied by the KES {{ "{:,.0f}".format(run.total_interest_pool) }}
+    pool paid out to members this run.
+  </p>
+</div>
+
+{% endblock %}
