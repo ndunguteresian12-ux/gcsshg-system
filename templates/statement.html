@@ -192,7 +192,7 @@
   {% if penalties %}
   <p class="muted">Total outstanding: <strong class="figure" style="color: var(--red);">KES {{ "{:,.0f}".format(penalties_owed) }}</strong></p>
   <table>
-    <tr><th>Type</th><th>Period</th><th class="figure-head">Amount</th><th>Status</th></tr>
+    <tr><th>Type</th><th>Reason</th><th class="figure-head">Amount</th><th>Status</th></tr>
     {% for p in penalties %}
     <tr>
       <td>{{ "Overdue loan" if p.penalty_type == "overdue_loan" else "Missed contribution" }}</td>
