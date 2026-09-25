@@ -51,6 +51,9 @@
     <div class="stat-stamp">%</div>
     <div class="stat-label">Expected interest</div>
     <div class="stat-value figure" style="{{ 'color: var(--red);' if expected_interest_total < 0 else '' }}">{{ "{:,.0f}".format(expected_interest_total) }}</div>
+    <div class="muted" style="font-size:0.72rem; margin-top:0.3rem; line-height:1.4;">
+      Gross accrued {{ "{:,.0f}".format(expected_interest_gross) }} - dividends paid {{ "{:,.0f}".format(dividends_paid_total) }}
+    </div>
   </div>
   <div class="stat-card" style="background:#2D6E8E; border:none;" title="Sum of the interest portion of every repayment ever recorded - each payment is split between interest and principal at the moment it's paid">
     <div class="stat-stamp" style="border-color: rgba(255,255,255,0.6); color:white;">P</div>

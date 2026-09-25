@@ -2412,6 +2412,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
         "total_loans_outstanding": total_loans_outstanding,
         "total_loans_issued": total_loans_issued,
         "expected_interest_total": expected_interest_total,
+        "expected_interest_gross": expected_interest_gross, "dividends_paid_total": dividends_paid_total,
         "contribution_growth": contribution_growth, "interest_growth": interest_growth,
         "timely_payment_pct": timely_payment_pct,
         "actual_interest_paid": actual_interest_paid,
