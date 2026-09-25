@@ -1384,7 +1384,9 @@ def dividend_member_breakdown(run_id: int, member_id: int, request: Request,
 
 
 @app.get("/bank-balance", response_class=HTMLResponse)
-def bank_balance_page(request: Request, session_data=Depends(get_session_optional)):
+def bank_balance_page(request: Request, prefill_amount: Optional[str] = None,
+                       prefill_note: Optional[str] = None, prefill_type: Optional[str] = None,
+                       session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
         return RedirectResponse(url="/login")
     conn = get_conn()
@@ -1405,6 +1407,8 @@ def bank_balance_page(request: Request, session_data=Depends(get_session_optiona
         conn.close()
     return templates.TemplateResponse(request, "bank_balance.html", {
         "history": history, "current_balance": current_balance, "role": session_data["role"],
+        "prefill_amount": prefill_amount or "", "prefill_note": prefill_note or "",
+        "prefill_type": prefill_type or "deposit",
     })
 
 
@@ -2338,8 +2342,11 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             # 1. Expected interest = what the interest calculator says has accrued
             #    across every loan ever issued, as of today (or as of the date a
             #    loan was cleared, so a settled loan doesn't keep "accruing" after
-            #    it was actually paid off). This is total owed (principal+interest)
-            #    minus total principal, i.e. purely the interest portion expected.
+            #    it was actually paid off), MINUS dividends already paid out -
+            #    since dividends are only ever shared from interest, once some has
+            #    been distributed it's no longer "expected" as undistributed. Can
+            #    go negative if dividends paid exceed what's now expected (e.g.
+            #    after a loan later defaults) - that's a genuine signal, not a bug.
             #
             # 2. Actual (paid) interest = the sum of interest_component across every
             #    repayment ever recorded. Each repayment already splits itself
@@ -2351,16 +2358,20 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             #    sharply negative for any partially-repaid loan - fixed here.)
             cur.execute("SELECT * FROM loans")
             all_loans_full = cur.fetchall()
-            expected_interest_total = Decimal("0")
+            expected_interest_gross = Decimal("0")
             for loan in all_loans_full:
                 terms = terms_from_loan_row(loan)
                 override = loan.get("interest_override_periods")
                 as_of = loan["cleared_date"] if (loan["status"] == "cleared" and loan["cleared_date"]) else date.today()
                 interest_due = loan_interest_due(loan["principal"], loan["issue_date"], as_of, terms, override)
-                expected_interest_total += interest_due
+                expected_interest_gross += interest_due
 
             cur.execute("SELECT COALESCE(SUM(interest_component),0) as total FROM loan_repayments")
             actual_interest_paid = cur.fetchone()["total"]
+
+            cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as total FROM dividends")
+            dividends_paid_total = cur.fetchone()["total"]
+            expected_interest_total = expected_interest_gross - dividends_paid_total
 
             today = date.today()
             contribution_growth = compute_contribution_growth(cur, today)
