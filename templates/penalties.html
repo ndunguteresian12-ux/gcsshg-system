@@ -46,6 +46,20 @@
     <button type="submit" class="btn-secondary">Recalculate all penalties</button>
   </form>
 </div>
+
+<div class="card" style="border-color: #f3c6c1;">
+  <h2 style="color: var(--red);">Wipe all penalties and start fresh</h2>
+  <p class="muted">
+    A more drastic reset - deletes <strong>every</strong> penalty, including ones already marked paid
+    or waived, then rebuilds from scratch based on current standing. Use this only if you want a
+    completely clean slate; it erases the historical record of which penalties were previously paid
+    or waived, so any past penalty payment will no longer show as settled.
+  </p>
+  <form method="post" action="/admin/wipe-and-recalculate-penalties"
+        onsubmit="return confirm('This deletes EVERY penalty record, including ones already marked paid or waived, and rebuilds fresh from current standing. This cannot be undone and erases penalty payment history. Are you sure?');">
+    <button type="submit" class="btn-secondary" style="color: var(--red); border-color: #f3c6c1;">Wipe all penalties &amp; recalculate</button>
+  </form>
+</div>
 {% endif %}
 
 <div class="card">

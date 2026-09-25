@@ -3402,7 +3402,12 @@ def generate_penalties(cur, settings, today):
     changed = 0
 
     # --- Overdue loan penalties: one consolidated entry per loan ---
-    cur.execute("SELECT * FROM loans WHERE status IN ('active', 'defaulted') AND due_date IS NOT NULL")
+    # Checks EVERY loan regardless of status - a loan that was overdue and
+    # has since been fully repaid (status -> cleared) still needs its old
+    # unpaid penalty entry cleaned up here; is_loan_overdue() already
+    # correctly returns False once balance <= 0, so nothing new gets
+    # charged for a settled loan, but the stale charge still gets removed.
+    cur.execute("SELECT * FROM loans WHERE due_date IS NOT NULL")
     loans = cur.fetchall()
     for loan in loans:
         cur.execute(
@@ -3503,6 +3508,33 @@ def recalculate_penalties(session_data=Depends(get_session_optional)):
         conn.close()
     return RedirectResponse(
         url=f"/penalties?error=Recalculated+-+{changed}+entries+updated+to+match+current+standing",
+        status_code=303,
+    )
+
+
+@app.post("/admin/wipe-and-recalculate-penalties")
+def wipe_and_recalculate_penalties(session_data=Depends(get_session_optional)):
+    """
+    The full reset: deletes EVERY penalty - including ones already marked
+    paid or waived - then rebuilds from scratch based on current standing.
+    Unlike the regular recalculate (which preserves paid/waived history),
+    this erases that history entirely, so use it only when you specifically
+    want a clean slate and don't need a record of past penalty payments.
+    """
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM penalties")
+            removed = cur.rowcount
+            settings = get_settings(cur)
+            changed = generate_penalties(cur, settings, date.today())
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(
+        url=f"/penalties?error=Wiped+all+{removed}+penalty+records+and+rebuilt+{changed}+fresh+from+current+standing",
         status_code=303,
     )
 
