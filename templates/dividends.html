@@ -9,18 +9,20 @@
 {% endblock %}
 {% block content %}
 
+{% include "_letterhead.html" %}
+
 <div class="section-title">
   <h2 style="font-size:1.3rem;">Dividends</h2>
-  <a href="/dashboard" class="row-link">&larr; Overview</a>
+  <a href="/dashboard" class="row-link no-print">&larr; Overview</a>
 </div>
 
 {% if request.query_params.get('error') %}
-<div class="error">{{ request.query_params.get('error') }}</div>
+<div class="error no-print">{{ request.query_params.get('error') }}</div>
 {% endif %}
 
-<a href="/dividends/record-historical" class="btn btn-secondary" style="margin-bottom:1rem;">Record a historical payout (pre-system)</a>
+<a href="/dividends/record-historical" class="btn btn-secondary no-print" style="margin-bottom:1rem;">Record a historical payout (pre-system)</a>
 
-<div class="card">
+<div class="card no-print">
   <h2>Run a new dividend payout</h2>
   <p class="muted">
     Suggested pool: interest collected so far minus what's already been paid out as dividends
@@ -63,6 +65,7 @@
 
 <div class="card">
   <h2>Past dividend runs</h2>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-bottom:1rem;">Print / Save as PDF</button>
   {% if year_groups %}
   <table>
     <tr><th>Fiscal year</th><th class="figure-head">Combined pool</th><th>Runs</th><th>Latest</th><th></th></tr>

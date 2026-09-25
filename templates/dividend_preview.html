@@ -8,8 +8,10 @@
 {% endblock %}
 {% block content %}
 
+{% include "_letterhead.html" %}
+
 <div class="card">
-  <a href="/dividends" class="row-link">&larr; Back to Dividends</a>
+  <a href="/dividends" class="row-link no-print">&larr; Back to Dividends</a>
   <h2 style="margin:0.6rem 0 0;">Preview: {{ fiscal_year_label }}</h2>
   {% if is_cumulative %}
   <p class="muted" style="color: #8a611d; font-weight:600;">Cumulative mode - covers everything since the group started.</p>
@@ -25,6 +27,7 @@
     {{ (period_end.replace(day=1)).strftime('%b %Y') }} (exclusive) only.
   </p>
   {% endif %}
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.5rem;">Print / Save as PDF</button>
 </div>
 
 <div class="stat-grid">
@@ -60,7 +63,7 @@
   </table>
 </div>
 
-<div class="card">
+<div class="card no-print">
   <form method="post" action="/dividends/confirm">
     <input type="hidden" name="fiscal_year_label" value="{{ fiscal_year_label }}">
     {% if is_cumulative %}
