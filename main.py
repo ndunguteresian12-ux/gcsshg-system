@@ -420,9 +420,41 @@ def get_member_total_deposits(cur, member_id):
     return cur.fetchone()["total"]
 
 
-def get_member_active_loan(cur, member_id):
-    cur.execute("SELECT * FROM loans WHERE member_id = %s AND status = 'active'", (member_id,))
-    return cur.fetchone()
+def get_member_active_loans(cur, member_id, exclude_loan_id=None):
+    """All of a member's currently active loans - a member can now hold more
+    than one at a time, as long as their deposits and/or guarantors can
+    cover the combined total (see get_member_available_loan_capacity)."""
+    query = "SELECT * FROM loans WHERE member_id = %s AND status = 'active'"
+    params = [member_id]
+    if exclude_loan_id:
+        query += " AND id != %s"
+        params.append(exclude_loan_id)
+    cur.execute(query, params)
+    return cur.fetchall()
+
+
+def get_member_active_loans_balance(cur, member_id, penalty_amount, exclude_loan_id=None):
+    """Combined current balance across ALL of a member's active loans."""
+    loans = get_member_active_loans(cur, member_id, exclude_loan_id)
+    total = Decimal("0")
+    for loan in loans:
+        detail = build_loan_detail(cur, loan, date.today(), penalty_amount)
+        total += detail["current_balance"]
+    return total
+
+
+def get_member_available_loan_capacity(cur, member_id, penalty_amount, exclude_loan_id=None):
+    """
+    How much MORE a member can self-guarantee for a new loan: their
+    deposits, minus the combined balance of whatever active loan(s) they
+    already hold. A member with substantial savings relative to their
+    current loan(s) can take on another - this is the basis for allowing
+    more than one active loan per member, as long as the numbers support
+    it (directly, or with guarantors covering the rest). Never negative.
+    """
+    deposits = get_member_total_deposits(cur, member_id)
+    existing_balance = get_member_active_loans_balance(cur, member_id, penalty_amount, exclude_loan_id)
+    return max(deposits - existing_balance, Decimal("0"))
 
 
 def get_guarantor_committed_amount(cur, member_id, exclude_loan_id=None):
@@ -441,19 +473,53 @@ def get_guarantor_committed_amount(cur, member_id, exclude_loan_id=None):
 def get_guarantor_available_capacity(cur, member_id, penalty_amount, exclude_loan_id=None):
     """
     A member's capacity to guarantee (part of) a loan: their own deposits,
-    minus their own active loan's balance (if they have one - a guarantor
-    whose own loan already exceeds their deposits has zero capacity, which
+    minus the combined balance of ALL their own active loans (a guarantor
+    whose own loans already exceed their deposits has zero capacity, which
     is exactly the 'reject over-leveraged guarantors' rule), minus whatever
     they're already committed to guaranteeing elsewhere. Never negative.
     """
     deposits = get_member_total_deposits(cur, member_id)
-    own_loan = get_member_active_loan(cur, member_id)
-    own_loan_balance = Decimal("0")
-    if own_loan:
-        detail = build_loan_detail(cur, own_loan, date.today(), penalty_amount)
-        own_loan_balance = detail["current_balance"]
+    own_loans_balance = get_member_active_loans_balance(cur, member_id, penalty_amount, exclude_loan_id)
     committed = get_guarantor_committed_amount(cur, member_id, exclude_loan_id)
-    return max(deposits - own_loan_balance - committed, Decimal("0"))
+    return max(deposits - own_loans_balance - committed, Decimal("0"))
+
+
+def check_loan_application_eligibility(cur, member_id, requested_amount, settings):
+    """
+    Runs automatic checks on a member's loan application, returning a list
+    of plain-language concern strings (empty if nothing's flagged). These
+    are NOT a hard rejection - the application is always recorded either
+    way, and an official can still choose to proceed despite any flags
+    raised here, using their own judgment.
+    """
+    flags = []
+
+    cur.execute("SELECT id FROM loans WHERE member_id = %s AND status = 'defaulted'", (member_id,))
+    if cur.fetchone():
+        flags.append("This member has a defaulted loan on record (see Black Records).")
+
+    self_capacity = get_member_available_loan_capacity(cur, member_id, settings["penalty_amount"])
+    if self_capacity < requested_amount:
+        cur.execute("SELECT id FROM members WHERE status = 'active' AND id != %s", (member_id,))
+        other_ids = [r["id"] for r in cur.fetchall()]
+        group_guarantor_capacity = sum(
+            (get_guarantor_available_capacity(cur, oid, settings["penalty_amount"]) for oid in other_ids),
+            Decimal("0"),
+        )
+        if self_capacity + group_guarantor_capacity < requested_amount:
+            flags.append(
+                f"Requested amount (KES {requested_amount:,.0f}) exceeds this member's self-guarantee "
+                f"capacity (KES {self_capacity:,.0f}) plus all other members' combined available "
+                f"guarantor capacity (KES {group_guarantor_capacity:,.0f}) - may not be fully coverable "
+                f"as things stand."
+            )
+        else:
+            flags.append(
+                f"Self-guarantee capacity (KES {self_capacity:,.0f}) doesn't cover the full amount - "
+                f"this will need guarantors for the remaining KES {requested_amount - self_capacity:,.0f}."
+            )
+
+    return flags
 
 
 def get_unpaid_loan_principal(cur):
@@ -2616,6 +2682,251 @@ def loans_page(request: Request, q: Optional[str] = None, session_data=Depends(g
     })
 
 
+@app.get("/loans/apply", response_class=HTMLResponse)
+def apply_for_loan_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "member":
+        return RedirectResponse(url="/login")
+    return templates.TemplateResponse(request, "loan_apply.html", {"role": session_data["role"]})
+
+
+@app.post("/loans/apply")
+def apply_for_loan_submit(requested_amount: float = Form(...), purpose: str = Form(""),
+                           session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] != "member":
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM members WHERE user_id = %s", (session_data["user_id"],))
+            member = cur.fetchone()
+            if not member:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>No member record is linked to your login - contact your chairperson.</p>")
+            member_id = member["id"]
+            settings = get_settings(cur)
+            amount_dec = Decimal(str(requested_amount))
+            flags = check_loan_application_eligibility(cur, member_id, amount_dec, settings)
+            cur.execute(
+                """INSERT INTO loan_applications (member_id, requested_amount, purpose, auto_flags)
+                   VALUES (%s, %s, %s, %s) RETURNING id""",
+                (member_id, amount_dec, purpose or None, "; ".join(flags) if flags else None),
+            )
+            application_id = cur.fetchone()["id"]
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/loans/apply/{application_id}/submitted", status_code=303)
+
+
+@app.get("/loans/apply/{application_id}/submitted", response_class=HTMLResponse)
+def loan_application_submitted(application_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data:
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM loan_applications WHERE id = %s", (application_id,))
+            application = cur.fetchone()
+    finally:
+        conn.close()
+    if not application:
+        return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Application not found.</p>")
+    return templates.TemplateResponse(request, "loan_application_submitted.html", {
+        "application": application, "role": session_data["role"],
+    })
+
+
+@app.get("/loans/applications", response_class=HTMLResponse)
+def loan_applications_page(request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT la.*, m.full_name FROM loan_applications la
+                   JOIN members m ON m.id = la.member_id
+                   ORDER BY (la.status = 'pending') DESC, la.applied_at DESC"""
+            )
+            applications = cur.fetchall()
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "loan_applications.html", {
+        "applications": applications, "role": session_data["role"],
+    })
+
+
+@app.get("/loans/applications/{application_id}/review", response_class=HTMLResponse)
+def review_loan_application(application_id: int, request: Request, session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT la.*, m.full_name FROM loan_applications la
+                   JOIN members m ON m.id = la.member_id WHERE la.id = %s""",
+                (application_id,),
+            )
+            application = cur.fetchone()
+            if not application:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Application not found.</p>")
+            if application["status"] != "pending":
+                return RedirectResponse(url="/loans/applications", status_code=303)
+
+            member_id = application["member_id"]
+            principal_dec = application["requested_amount"]
+            settings = get_settings(cur)
+            existing_loans = get_member_active_loans(cur, member_id)
+            self_capacity = get_member_available_loan_capacity(cur, member_id, settings["penalty_amount"])
+            self_guarantee_amount = min(principal_dec, self_capacity)
+            remaining_needed = max(principal_dec - self_capacity, Decimal("0"))
+
+            terms = classify_loan(
+                principal_dec,
+                low_ceiling=settings["low_loan_ceiling"],
+                low_rate=settings["low_loan_interest_rate"],
+                mid_rate=settings["high_loan_interest_rate"],
+                low_deadline=settings["low_loan_deadline_months"],
+                mid_deadline=settings["high_loan_deadline_months"],
+                high_ceiling=settings["high_loan_ceiling"],
+            )
+            issue_date = date.today()
+            due_date = compute_due_date(issue_date, terms)
+            expected_interest = loan_interest_due(principal_dec, issue_date, due_date, terms)
+            total_owed = principal_dec + expected_interest
+
+            cur.execute("SELECT id, full_name FROM members WHERE status = 'active' AND id != %s ORDER BY full_name", (member_id,))
+            other_members = cur.fetchall()
+            eligible_guarantors = []
+            for m in other_members:
+                capacity = get_guarantor_available_capacity(cur, m["id"], settings["penalty_amount"])
+                if capacity > 0:
+                    eligible_guarantors.append({"id": m["id"], "full_name": m["full_name"], "capacity": capacity})
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(request, "loan_application_review.html", {
+        "role": session_data["role"], "application": application, "borrower_name": application["full_name"],
+        "member_id": member_id, "principal": principal_dec, "issue_date_field": issue_date.isoformat(),
+        "self_capacity": self_capacity, "self_guarantee_amount": self_guarantee_amount,
+        "remaining_needed": remaining_needed, "eligible_guarantors": eligible_guarantors,
+        "terms": terms, "due_date": due_date, "expected_interest": expected_interest, "total_owed": total_owed,
+        "existing_loans": existing_loans,
+    })
+
+
+@app.post("/loans/applications/{application_id}/confirm")
+async def confirm_loan_application(application_id: int, request: Request, session_data=Depends(get_session_optional)):
+    # Final approval from an application always requires the chairperson
+    # specifically - a treasurer can review and prepare guarantors, but
+    # cannot give the final sign-off on an application-derived loan.
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/loans/applications?error=Only+the+chairperson+can+give+final+approval+for+an+application", status_code=303)
+    form = await request.form()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM loan_applications WHERE id = %s", (application_id,))
+            application = cur.fetchone()
+            if not application or application["status"] != "pending":
+                return RedirectResponse(url="/loans/applications?error=Application+not+found+or+already+handled", status_code=303)
+
+            member_id = application["member_id"]
+            principal_dec = application["requested_amount"]
+            issue_date = date.today()
+
+            guarantor_allocations = []
+            for key, value in form.multi_items():
+                if not key.startswith("guarantor_") or not value.strip():
+                    continue
+                try:
+                    amount = Decimal(value)
+                except Exception:
+                    continue
+                if amount <= 0:
+                    continue
+                guarantor_id = int(key.replace("guarantor_", ""))
+                guarantor_allocations.append((guarantor_id, amount))
+
+            settings = get_settings(cur)
+            self_capacity = get_member_available_loan_capacity(cur, member_id, settings["penalty_amount"])
+            self_guarantee_amount = min(principal_dec, self_capacity)
+            total_covered = self_guarantee_amount
+
+            for guarantor_id, amount in guarantor_allocations:
+                if guarantor_id == member_id:
+                    return RedirectResponse(url=f"/loans/applications/{application_id}/review?error=A+borrower+cannot+guarantee+their+own+loan", status_code=303)
+                capacity = get_guarantor_available_capacity(cur, guarantor_id, settings["penalty_amount"])
+                if amount > capacity:
+                    cur.execute("SELECT full_name FROM members WHERE id = %s", (guarantor_id,))
+                    name = cur.fetchone()["full_name"]
+                    return RedirectResponse(
+                        url=f"/loans/applications/{application_id}/review?error={quote_plus(f'{name} only has KES {capacity:,.0f} available, not {amount:,.0f}')}",
+                        status_code=303,
+                    )
+                total_covered += amount
+
+            if total_covered < principal_dec:
+                return RedirectResponse(
+                    url=f"/loans/applications/{application_id}/review?error={quote_plus(f'Only KES {total_covered:,.0f} of KES {principal_dec:,.0f} is covered - add more guarantors.')}",
+                    status_code=303,
+                )
+
+            terms = classify_loan(
+                principal_dec,
+                low_ceiling=settings["low_loan_ceiling"],
+                low_rate=settings["low_loan_interest_rate"],
+                mid_rate=settings["high_loan_interest_rate"],
+                low_deadline=settings["low_loan_deadline_months"],
+                mid_deadline=settings["high_loan_deadline_months"],
+                high_ceiling=settings["high_loan_ceiling"],
+            )
+            due_date = compute_due_date(issue_date, terms)
+            cur.execute(
+                """INSERT INTO loans (member_id, principal, issue_date, due_date, interest_tier,
+                                       interest_rate, period_months, approved_by)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (member_id, principal_dec, issue_date, due_date, terms.tier, terms.rate_percent,
+                 terms.period_months, session_data["user_id"]),
+            )
+            new_loan_id = cur.fetchone()["id"]
+
+            for guarantor_id, amount in guarantor_allocations:
+                cur.execute(
+                    "INSERT INTO loan_guarantors (loan_id, guarantor_member_id, amount_guaranteed) VALUES (%s, %s, %s)",
+                    (new_loan_id, guarantor_id, amount),
+                )
+
+            cur.execute(
+                "UPDATE loan_applications SET status = 'approved', reviewed_by = %s, reviewed_at = now(), "
+                "resulting_loan_id = %s WHERE id = %s",
+                (session_data["user_id"], new_loan_id, application_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/loans/{new_loan_id}/agreement", status_code=303)
+
+
+@app.post("/loans/applications/{application_id}/reject")
+def reject_loan_application(application_id: int, rejection_reason: str = Form(""),
+                             session_data=Depends(get_session_optional)):
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
+        return RedirectResponse(url="/loans/applications?error=Only+officials+can+reject+an+application", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE loan_applications SET status = 'rejected', reviewed_by = %s, reviewed_at = now(), "
+                "rejection_reason = %s WHERE id = %s AND status = 'pending'",
+                (session_data["user_id"], rejection_reason or None, application_id),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/loans/applications?error=Application+rejected", status_code=303)
+
+
 @app.get("/loans/issue", response_class=HTMLResponse)
 def issue_loan_page(request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] not in ("chairperson", "treasurer"):
@@ -2761,12 +3072,7 @@ def issue_loan_review(request: Request, member_id: int = Form(...), principal: f
             if not borrower:
                 return RedirectResponse(url="/loans/issue?error=Member+not+found", status_code=303)
 
-            existing = get_member_active_loan(cur, member_id)
-            if existing:
-                return RedirectResponse(
-                    url=f"/loans/issue?error={quote_plus(borrower['full_name'] + ' already has an active loan - only one loan per member at a time.')}",
-                    status_code=303,
-                )
+            existing_loans = get_member_active_loans(cur, member_id)
 
             if not confirm_duplicate:
                 dup = find_duplicate_loan(cur, member_id, principal_dec, issue_date)
@@ -2778,7 +3084,11 @@ def issue_loan_review(request: Request, member_id: int = Form(...), principal: f
                     )
 
             settings = get_settings(cur)
-            self_capacity = get_member_total_deposits(cur, member_id)
+            # Self-guarantee capacity is now net of any active loan(s) this
+            # member already holds - a member with enough savings relative
+            # to what they currently owe can take on another loan, rather
+            # than being blocked outright just for having one already.
+            self_capacity = get_member_available_loan_capacity(cur, member_id, settings["penalty_amount"])
             self_guarantee_amount = min(principal_dec, self_capacity)
             remaining_needed = max(principal_dec - self_capacity, Decimal("0"))
 
@@ -2812,6 +3122,7 @@ def issue_loan_review(request: Request, member_id: int = Form(...), principal: f
         "self_capacity": self_capacity, "self_guarantee_amount": self_guarantee_amount,
         "remaining_needed": remaining_needed, "eligible_guarantors": eligible_guarantors,
         "terms": terms, "due_date": due_date, "expected_interest": expected_interest, "total_owed": total_owed,
+        "existing_loans": existing_loans,
     })
 
 
@@ -2844,12 +3155,8 @@ async def issue_loan_confirm(request: Request, session_data=Depends(get_session_
         with conn.cursor() as cur:
             # Re-validate everything fresh - never trust what the browser sent,
             # since capacity may have changed between review and confirm.
-            existing = get_member_active_loan(cur, member_id)
-            if existing:
-                return RedirectResponse(url="/loans/issue?error=This+member+now+has+an+active+loan+-+cannot+issue+another", status_code=303)
-
             settings = get_settings(cur)
-            self_capacity = get_member_total_deposits(cur, member_id)
+            self_capacity = get_member_available_loan_capacity(cur, member_id, settings["penalty_amount"])
             self_guarantee_amount = min(principal_dec, self_capacity)
             total_covered = self_guarantee_amount
 
@@ -3944,6 +4251,11 @@ def statement_page(request: Request, member_id: Optional[int] = None,
             penalties = cur.fetchall()
             penalties_owed = sum((p["amount"] for p in penalties if not p["waived"] and not p["paid"]), Decimal("0"))
 
+            cur.execute(
+                "SELECT * FROM loan_applications WHERE member_id = %s ORDER BY applied_at DESC", (mid,)
+            )
+            loan_applications = cur.fetchall()
+
             cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
             group_total_contributions = cur.fetchone()["total"]
 
@@ -3974,6 +4286,7 @@ def statement_page(request: Request, member_id: Optional[int] = None,
         "timely_payment_pct": timely_payment_pct,
         "own_chart_json": own_chart_json, "greeting": time_greeting(),
         "standing": standing, "min_contribution": settings["min_monthly_contribution"],
+        "loan_applications": loan_applications,
         "role": session_data["role"],
     })
 
