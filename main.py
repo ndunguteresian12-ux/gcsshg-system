@@ -342,11 +342,19 @@ def run_reminder_checks(cur, today):
                 (m["id"], period_label),
             )
             if cur.fetchone():
+                if total > 0:
+                    status_line = (
+                        f"So far KES {total:,.0f} has been recorded for {current_month.strftime('%B %Y')}, "
+                        f"against the KES {settings['min_monthly_contribution']:,.0f} minimum."
+                    )
+                else:
+                    status_line = (
+                        f"Your GCSSHG contribution of at least KES {settings['min_monthly_contribution']:,.0f} "
+                        f"for {current_month.strftime('%B %Y')} hasn't been recorded yet."
+                    )
                 body = (
                     f"Hello {m['full_name']},\n\n"
-                    f"This is a reminder that your GCSSHG contribution of at least "
-                    f"KES {settings['min_monthly_contribution']:,.0f} for {current_month.strftime('%B %Y')} "
-                    f"hasn't been recorded yet.\n\n"
+                    f"This is a reminder from GCSSHG. {status_line}\n\n"
                     f"Please make your contribution as soon as you can.\n\n- GCSSHG"
                 )
                 ok, _ = send_email(m["email"], "GCSSHG monthly contribution reminder", body)
@@ -783,11 +791,12 @@ def record_contribution(payload: ContributionCreate, officer=Depends(require_off
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            if payload.amount < settings["min_monthly_contribution"]:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Amount below group minimum of {settings['min_monthly_contribution']}",
-                )
+            # Any positive amount is accepted, including less than the monthly
+            # minimum - a short payment is recorded as paid, and the gap shows
+            # up in the member's cumulative standing (and penalty), not as a
+            # rejected entry.
+            if payload.amount <= 0:
+                raise HTTPException(status_code=400, detail="Amount must be greater than zero")
             contrib_month = payload.contribution_month.replace(day=1)
             cur.execute(
                 """INSERT INTO contributions (member_id, contribution_month, amount, recorded_by, note)
@@ -4218,11 +4227,10 @@ def add_contribution_form(member_id: int = Form(...), contribution_month: str = 
     try:
         with conn.cursor() as cur:
             settings = get_settings(cur)
-            if amount < float(settings["min_monthly_contribution"]):
-                return RedirectResponse(
-                    url=f"/dashboard?error=Amount+below+minimum+of+{settings['min_monthly_contribution']}",
-                    status_code=303,
-                )
+            # Any positive amount is accepted, including less than the monthly
+            # minimum - the shortfall is picked up in the member's standing.
+            if amount <= 0:
+                return RedirectResponse(url="/dashboard?error=Amount+must+be+greater+than+zero", status_code=303)
             month_date = contribution_month if len(contribution_month) == 10 else f"{contribution_month}-01"
             cur.execute(
                 "INSERT INTO contributions (member_id, contribution_month, amount, recorded_by) "

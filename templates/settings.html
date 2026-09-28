@@ -22,7 +22,8 @@
 <div class="card">
   <form method="post" action="/settings/update">
     <h2 style="font-size:0.95rem;">Contributions</h2>
-    <label for="min_monthly_contribution">Minimum monthly contribution (KES)</label>
+    <label for="min_monthly_contribution">Expected monthly contribution (KES)</label>
+    <p class="muted" style="margin:0 0 0.3rem;">Members can pay less - this is the amount expected each month when working out who is behind and any penalty.</p>
     <input type="number" id="min_monthly_contribution" name="min_monthly_contribution" step="1" min="0" value="{{ settings.min_monthly_contribution }}" required>
 
     <h2 style="font-size:0.95rem; margin-top:1.4rem;">Loan tiers</h2>

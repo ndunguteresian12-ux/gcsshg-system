@@ -10,6 +10,7 @@
   <a href="/bank-balance">Bank</a>
   <a href="/reports">Reports</a>
   <a href="/audit">Audit</a>
+  <a href="/loans/applications">Loan Applications</a>
   <a href="/send-email">Send Email</a>
   {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
@@ -164,7 +165,8 @@
     <input type="month" id="contribution_month" name="contribution_month" required>
 
     <label for="amount">Amount (KES)</label>
-    <input type="number" id="amount" name="amount" min="500" step="1" placeholder="500" required>
+    <input type="number" id="amount" name="amount" min="1" step="1" placeholder="Amount paid" required>
+    <p class="muted" style="margin-top:0.3rem;">Any amount is accepted, including less than the monthly minimum - any shortfall shows up in the member's standing.</p>
 
     <button type="submit">Save contribution</button>
   </form>
