@@ -9,6 +9,7 @@
   <a href="/bank-balance">Bank</a>
   <a href="/reports">Reports</a>
   <a href="/audit">Audit</a>
+  <a href="/loans/applications">Loan Applications</a>
   <a href="/send-email">Send Email</a>
   {% if role == 'chairperson' %}<a href="/dividends">Dividends</a> <a href="/settings">Settings</a>{% endif %}
   <a href="/logout">Log out</a>
@@ -84,7 +85,7 @@
     <div style="display:flex; align-items:flex-end; gap:0.8rem; margin-bottom:0.5rem; flex-wrap:wrap;">
       <div>
         <label for="payment_date_field" style="margin:0 0 0.25rem;">Default date (fills in blank dates below)</label>
-        <input type="date" id="payment_date_field" name="payment_date_field" style="width:auto;">
+        <input type="date" id="payment_date_field" name="payment_date_field" value="{{ today_iso }}" required style="width:auto;">
       </div>
       <button type="submit" class="btn" style="width:auto; margin-top:0;">Save all repayments</button>
     </div>
@@ -98,7 +99,7 @@
     <table>
       <tr>
         <th>Member</th><th>Issued</th><th>Due</th><th class="figure-head">Principal</th>
-        <th>Rate</th><th class="figure-head">Paid</th><th class="figure-head">Balance</th>
+        <th>Rate</th><th class="figure-head">Interest</th><th class="figure-head">Paid</th><th class="figure-head">Balance (Total Due)</th>
         <th class="figure-head">Penalty</th><th>Status</th>
         {% if role in ['chairperson', 'treasurer'] %}<th>Amount to pay</th><th>Date</th>{% endif %}
         <th></th>
@@ -117,13 +118,15 @@
           <span class="badge" style="background:#eee; color:#555;" title="Interest fixed at {{ l.interest_override_periods }} period(s), not date-calculated">fixed</span>
           {% endif %}
         </td>
+        <td class="figure" style="text-align:right; color:#8a611d; font-weight:600;">{{ "{:,.0f}".format(l.current_balance - l.principal + l.amount_repaid) }}</td>
         <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(l.amount_repaid) }}</td>
-        <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(l.current_balance) }}</td>
+        <td class="figure" style="text-align:right; {{ 'color: var(--red); font-weight:700;' if l.current_balance < 0 else '' }}">{{ "{:,.0f}".format(l.current_balance) }}</td>
         <td class="figure" style="text-align:right;">
           {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">{{ "{:,.0f}".format(l.penalty_due) }}</span>{% else %}-{% endif %}
         </td>
         <td>
-          {% if l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
+          {% if l.current_balance < 0 %}<span style="color: var(--red); font-weight:700;">overpaid</span>
+          {% elif l.is_overdue %}<span style="color: var(--red); font-weight:600;">overdue</span>
           {% else %}{{ l.status }}{% endif %}
         </td>
         {% if role in ['chairperson', 'treasurer'] %}
@@ -158,6 +161,7 @@
         <td colspan="3">Cumulative totals</td>
         <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_loans_issued) }}</td>
         <td></td>
+        <td></td>
         <td class="figure" style="text-align:right; color: var(--forest-dark);">{{ "{:,.0f}".format(total_repaid) }}</td>
         <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(total_outstanding) }}</td>
         <td></td><td></td>
@@ -182,11 +186,13 @@
 (function() {
   const defaultField = document.getElementById('payment_date_field');
   if (!defaultField) return;
-  defaultField.addEventListener('change', function() {
+  function fillBlankRowDates() {
     document.querySelectorAll('.row-date-field').forEach(function(el) {
       if (!el.value) el.value = defaultField.value;
     });
-  });
+  }
+  fillBlankRowDates();                                   // dates are never left blank on page load
+  defaultField.addEventListener('change', fillBlankRowDates);
 })();
 </script>
 

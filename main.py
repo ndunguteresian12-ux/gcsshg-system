@@ -2741,6 +2741,7 @@ def loans_page(request: Request, q: Optional[str] = None, session_data=Depends(g
         conn.close()
     return templates.TemplateResponse(request, "loans.html", {
         "loans": loan_rows, "role": session_data["role"], "search_query": q or "",
+        "today_iso": date.today().isoformat(),
         "total_loans_issued": total_loans_issued, "total_repaid": total_repaid,
         "total_outstanding": total_outstanding, "overdue_count": overdue_count,
     })
@@ -3273,6 +3274,26 @@ async def issue_loan_confirm(request: Request, session_data=Depends(get_session_
     return RedirectResponse(url=f"/loans/{new_loan_id}/agreement", status_code=303)
 
 
+def repayment_split_since(cur, before_id):
+    """Interest vs principal totals of every repayment inserted after row id `before_id`."""
+    cur.execute(
+        "SELECT COALESCE(SUM(interest_component),0) as i, COALESCE(SUM(principal_component),0) as p "
+        "FROM loan_repayments WHERE id > %s",
+        (before_id,),
+    )
+    row = cur.fetchone()
+    return row["i"], row["p"]
+
+
+def describe_repayment_split(interest, principal):
+    """Plain-language summary shown after recording repayments, so it's always clear where the money went."""
+    text = f"KES {interest:,.0f} went to interest and KES {principal:,.0f} to principal."
+    if interest == 0 and principal > 0:
+        text += (" No interest was due on the payment date (interest starts building up the day AFTER a loan "
+                 "is issued), so none of it counts as interest paid - check the payment date if that looks wrong.")
+    return text
+
+
 def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
     """
     Records one repayment against a loan, splitting it between interest and
@@ -3501,21 +3522,22 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
                 return RedirectResponse(url="/loans?error=Loan+not+found", status_code=303)
             payment_date = date.fromisoformat(payment_date_field)
             amount_dec = Decimal(str(amount))
+            cur.execute("SELECT COALESCE(MAX(id),0) as m FROM loan_repayments")
+            before_id = cur.fetchone()["m"]
             applied, leftover = apply_repayment_with_overflow(cur, loan_id, amount_dec, payment_date, session_data["user_id"])
+            split_interest, split_principal = repayment_split_since(cur, before_id)
             conn.commit()
     finally:
         conn.close()
 
-    if len(applied) > 1:
-        message = f"Repayment+recorded+-+spread+across+{len(applied)}+loans"
-    else:
-        message = "Repayment+recorded"
+    message = "Repayment recorded" + (f" (spread across {len(applied)} loans)" if len(applied) > 1 else "") + ". "
+    message += describe_repayment_split(split_interest, split_principal)
     if leftover > 0:
-        message += f"+-+KES+{leftover:,.0f}+could+not+be+applied+(no+more+active+loans)"
+        message += f" KES {leftover:,.0f} could not be applied (no more active loans)."
 
     if search_query:
-        return RedirectResponse(url=f"/loans?success={message}&q={quote_plus(search_query)}", status_code=303)
-    return RedirectResponse(url=f"/loans/{loan_id}/statement?success={message}", status_code=303)
+        return RedirectResponse(url="/loans?" + urlencode({"success": message, "q": search_query}), status_code=303)
+    return RedirectResponse(url=f"/loans/{loan_id}/statement?" + urlencode({"success": message}), status_code=303)
 
 
 @app.post("/loans/bulk-repay")
@@ -3531,8 +3553,11 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
     saved = 0
     skipped_no_date = 0
     total_leftover = Decimal("0")
+    split_interest = split_principal = Decimal("0")
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(id),0) as m FROM loan_repayments")
+            before_id = cur.fetchone()["m"]
             # Collect every loan that has its own explicit amount in this
             # batch first, so cascading from one loan's overpayment never
             # overrides an amount the officer separately entered for another
@@ -3582,19 +3607,27 @@ async def bulk_repay_loans(request: Request, session_data=Depends(get_session_op
                 if applied:
                     saved += 1
                 total_leftover += leftover
+            split_interest, split_principal = repayment_split_since(cur, before_id)
             conn.commit()
     finally:
         conn.close()
 
-    message = f"{saved}+repayment(s)+recorded"
-    if total_leftover > 0:
-        message += f"+-+KES+{total_leftover:,.0f}+could+not+be+applied+(no+more+active+loans+for+some+members)"
+    params = {}
+    if saved:
+        params["success"] = f"{saved} repayment(s) recorded. " + describe_repayment_split(split_interest, split_principal)
+    problems = []
     if skipped_no_date:
-        message += f"+-+{skipped_no_date}+skipped+(no+date+given)"
-    redirect_url = f"/loans?success={message}"
+        problems.append(f"{skipped_no_date} repayment(s) were NOT recorded because no payment date was entered - "
+                        f"pick a date and submit those again.")
+    if total_leftover > 0:
+        problems.append(f"KES {total_leftover:,.0f} could not be applied (no more active loans for some members).")
+    if not saved and not problems:
+        problems.append("Nothing was recorded - enter an amount against at least one loan.")
+    if problems:
+        params["error"] = " ".join(problems)
     if search_query:
-        redirect_url += f"&q={quote_plus(search_query)}"
-    return RedirectResponse(url=redirect_url, status_code=303)
+        params["q"] = search_query
+    return RedirectResponse(url="/loans?" + urlencode(params), status_code=303)
 
 
 @app.post("/loans/{loan_id}/delete")
