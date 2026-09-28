@@ -3696,7 +3696,7 @@ def settings_update(
     return RedirectResponse(url="/settings?error=Settings+saved", status_code=303)
 
 
-def generate_penalties(cur, settings, today):
+def generate_penalties(cur, settings, today, include_loans=True, include_contributions=True):
     """
     Self-correcting: for every active overdue loan and every member behind
     on contributions, replaces any existing UNPAID, UNWAIVED penalty for
@@ -3726,8 +3726,11 @@ def generate_penalties(cur, settings, today):
     # unpaid penalty entry cleaned up here; is_loan_overdue() already
     # correctly returns False once balance <= 0, so nothing new gets
     # charged for a settled loan, but the stale charge still gets removed.
-    cur.execute("SELECT * FROM loans WHERE due_date IS NOT NULL")
-    loans = cur.fetchall()
+    if include_loans:
+        cur.execute("SELECT * FROM loans WHERE due_date IS NOT NULL")
+        loans = cur.fetchall()
+    else:
+        loans = []
     for loan in loans:
         cur.execute(
             "SELECT COALESCE(SUM(amount),0) as repaid FROM loan_repayments WHERE loan_id = %s",
@@ -3761,8 +3764,11 @@ def generate_penalties(cur, settings, today):
     # joining). Someone who paid 1000 in March and 0 in April is NOT penalized -
     # their running total already covers both months. This avoids fining
     # members who front-load or pay unevenly but keep pace overall.
-    cur.execute("SELECT id, join_date FROM members WHERE status = 'active'")
-    members = cur.fetchall()
+    if include_contributions:
+        cur.execute("SELECT id, join_date FROM members WHERE status = 'active'")
+        members = cur.fetchall()
+    else:
+        members = []
     min_contribution = settings["min_monthly_contribution"]
     for m in members:
         cur.execute(
@@ -3829,6 +3835,36 @@ def recalculate_penalties(session_data=Depends(get_session_optional)):
         url=f"/penalties?error=Recalculated+-+{changed}+entries+updated+to+match+current+standing",
         status_code=303,
     )
+
+
+@app.post("/admin/reset-contribution-penalties")
+def reset_contribution_penalties(session_data=Depends(get_session_optional)):
+    """
+    Deletes EVERY late-contribution penalty (unpaid, waived, and paid) and
+    rebuilds them from each member's current standing:
+        months elapsed since joining (not counting the current month)
+        x minimum monthly contribution = expected by now
+        expected - actually contributed = shortfall
+        penalty = ceil(shortfall / minimum) x penalty amount
+    Overdue-loan penalties are NOT touched.
+    """
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) as n FROM penalties WHERE penalty_type = 'missed_contribution' AND (paid = TRUE OR waived = TRUE)")
+            settled = cur.fetchone()["n"]
+            cur.execute("DELETE FROM penalties WHERE penalty_type = 'missed_contribution'")
+            removed = cur.rowcount
+            settings = get_settings(cur)
+            rebuilt = generate_penalties(cur, settings, date.today(), include_loans=False, include_contributions=True)
+            conn.commit()
+    finally:
+        conn.close()
+    msg = (f"Removed {removed} late-contribution penalties ({settled} of them were already paid or waived) "
+           f"and recalculated {rebuilt} fresh from current standing. Loan penalties were not touched.")
+    return RedirectResponse(url="/penalties?" + urlencode({"error": msg}), status_code=303)
 
 
 @app.post("/admin/wipe-and-recalculate-penalties")

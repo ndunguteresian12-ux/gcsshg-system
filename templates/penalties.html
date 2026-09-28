@@ -47,6 +47,26 @@
   </form>
 </div>
 
+<div class="card">
+  <h2>Reset late-contribution penalties only</h2>
+  <p class="muted">
+    Deletes every late-contribution penalty and recalculates them from scratch for each member:<br>
+    <strong>months elapsed since joining</strong> (not counting the current month) &times;
+    <strong>the minimum monthly contribution</strong> = amount expected by now.<br>
+    Expected &minus; what they've actually contributed = <strong>shortfall</strong>.<br>
+    Penalty = shortfall &divide; minimum contribution (rounded up to whole months) &times; the penalty amount.
+    A member who is caught up gets no penalty at all.
+  </p>
+  <p class="muted">
+    Overdue-loan penalties are <strong>not</strong> touched. This also removes late-contribution
+    penalties that were already marked paid or waived, so note down any you need to remember first.
+  </p>
+  <form method="post" action="/admin/reset-contribution-penalties"
+        onsubmit="return confirm('This deletes EVERY late-contribution penalty (including any already marked paid or waived) and recalculates them from each member\'s current standing. Overdue-loan penalties are not touched. Continue?');">
+    <button type="submit" class="btn-secondary">Reset &amp; recalculate late-contribution penalties</button>
+  </form>
+</div>
+
 <div class="card" style="border-color: #f3c6c1;">
   <h2 style="color: var(--red);">Wipe all penalties and start fresh</h2>
   <p class="muted">
