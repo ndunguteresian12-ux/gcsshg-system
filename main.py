@@ -3540,6 +3540,10 @@ def delete_loan(loan_id: int, session_data=Depends(get_session_optional)):
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            # Penalties only store the loan's ID (no link that cascades), so
+            # remove them explicitly - otherwise they'd be stranded forever
+            # on a member who no longer has that loan.
+            cur.execute("DELETE FROM penalties WHERE penalty_type = 'overdue_loan' AND reference_id = %s", (loan_id,))
             cur.execute("DELETE FROM loans WHERE id = %s", (loan_id,))
             conn.commit()
     finally:
@@ -3719,6 +3723,24 @@ def generate_penalties(cur, settings, today, include_loans=True, include_contrib
     """
     penalty_amount = settings["penalty_amount"]
     changed = 0
+
+    # --- Sweep out stranded penalties ---
+    # An unpaid loan penalty whose loan no longer exists (deleted earlier),
+    # or an unpaid contribution penalty for a member who is no longer
+    # active, can never be re-checked by the loops below - nothing points
+    # at them any more - so they'd sit on a member's statement forever.
+    if include_loans:
+        cur.execute(
+            "DELETE FROM penalties WHERE penalty_type = 'overdue_loan' AND paid = FALSE AND waived = FALSE "
+            "AND (reference_id IS NULL OR reference_id NOT IN (SELECT id FROM loans))"
+        )
+        changed += cur.rowcount
+    if include_contributions:
+        cur.execute(
+            "DELETE FROM penalties WHERE penalty_type = 'missed_contribution' AND paid = FALSE AND waived = FALSE "
+            "AND member_id NOT IN (SELECT id FROM members WHERE status = 'active')"
+        )
+        changed += cur.rowcount
 
     # --- Overdue loan penalties: one consolidated entry per loan ---
     # Checks EVERY loan regardless of status - a loan that was overdue and
