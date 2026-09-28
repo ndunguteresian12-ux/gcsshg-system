@@ -61,7 +61,7 @@
   </span>
   {% endif %}
   {% if loan.is_overdue %}
-  <span style="color: var(--red); font-weight:600; margin-left:0.6rem;">Overdue ({{ loan.overdue_months }} month{{ 's' if loan.overdue_months != 1 else '' }})</span>
+  <span style="color: var(--red); font-weight:600; margin-left:0.6rem;">Overdue{% if loan.overdue_months %} ({{ loan.overdue_months }} month{{ 's' if loan.overdue_months != 1 else '' }} penalised){% else %} (no penalty yet - fresh start){% endif %}</span>
   {% endif %}
 </div>
 

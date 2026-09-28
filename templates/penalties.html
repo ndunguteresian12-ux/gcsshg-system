@@ -31,7 +31,44 @@
   </div>
 </div>
 
+{% if penalty_start_date %}
+<div class="error" style="background: var(--gold-soft); color: #8a611d; border-color: var(--gold);">
+  <strong>Fresh start in effect:</strong> penalties only count shortfall and overdue months from
+  {{ penalty_start_date.strftime('%d %b %Y') }} onward. Anything before that date is not penalised.
+</div>
+{% endif %}
+
 {% if role == 'chairperson' %}
+<div class="card" style="border-color: var(--gold);">
+  <h2>Fresh start - clear the slate</h2>
+  <p class="muted">
+    A plain "wipe" deletes penalties and then rebuilds the same ones straight away, because the
+    contribution and loan history still says those members were short or overdue. A <strong>fresh
+    start</strong> avoids that: it deletes every penalty <em>and</em> sets today as the date penalties
+    begin, so nothing from before today is ever counted.
+  </p>
+  <ul class="muted" style="margin:0.4rem 0 0.4rem 1.2rem;">
+    <li>Every existing penalty is deleted (paid and waived ones too).</li>
+    <li>Late contributions: counting starts from this month. Nobody is penalised for earlier shortfall, and
+        anyone who had paid ahead keeps that credit.</li>
+    <li>Overdue loans: only months overdue <em>after today</em> attract the KES penalty.
+        The loan still shows as overdue - it just carries no penalty for the past.</li>
+  </ul>
+  {% if penalty_start_date %}
+  <p class="muted"><strong>Currently counting from {{ penalty_start_date.strftime('%d %b %Y') }}.</strong></p>
+  {% endif %}
+  <form method="post" action="/admin/penalties-fresh-start" style="display:inline;"
+        onsubmit="return confirm('Delete EVERY penalty (including any already marked paid or waived) and start counting penalties from today? Nothing from before today will ever be penalised. This cannot be undone.');">
+    <button type="submit">Delete all penalties &amp; start fresh from today</button>
+  </form>
+  {% if penalty_start_date %}
+  <form method="post" action="/admin/penalties-clear-start-date" style="display:inline;"
+        onsubmit="return confirm('Stop using a start date? Penalties would count from each member\'s join date and each loan\'s due date again once you run the penalty check.');">
+    <button type="submit" class="btn-secondary">Remove the start date</button>
+  </form>
+  {% endif %}
+</div>
+
 <div class="card">
   <h2>Recalculate penalties</h2>
   <p class="muted">

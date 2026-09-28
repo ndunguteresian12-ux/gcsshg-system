@@ -2,7 +2,7 @@
 {% block title %}Statement - {{ member.full_name }}{% endblock %}
 {% block header_right %}
 <nav>
-  {% if role == 'member' %}<a href="/logout">Log out</a>
+  {% if role == 'member' %}<a href="/loans/apply">Apply for a loan</a><a href="/logout">Log out</a>
   {% else %}<a href="/members">&larr; Members</a><a href="/logout">Log out</a>{% endif %}
 </nav>
 {% endblock %}
@@ -171,11 +171,24 @@
 <div class="card">
   <h2>Your contribution standing</h2>
   <p class="muted">
+    {% if standing.baseline_month %}
+    Penalties were reset, so counting starts from <strong>{{ standing.baseline_month.strftime('%B %Y') }}</strong>
+    - earlier shortfall is not penalised.<br>
+    {{ standing.months_elapsed }} month{{ 's' if standing.months_elapsed != 1 else '' }} elapsed since then
+    {% else %}
     {{ standing.months_elapsed }} month{{ 's' if standing.months_elapsed != 1 else '' }} elapsed since you joined
+    {% endif %}
     (not counting the current month in progress) &times; the KES {{ "{:,.0f}".format(min_contribution) }} minimum
     = <strong class="figure">KES {{ "{:,.0f}".format(standing.expected_cumulative) }}</strong> expected by now.
   </p>
-  <p class="muted">You've contributed <strong class="figure">KES {{ "{:,.0f}".format(standing.actual_cumulative) }}</strong> in total.</p>
+  <p class="muted">
+    {% if standing.baseline_month %}
+    You've contributed <strong class="figure">KES {{ "{:,.0f}".format(standing.actual_cumulative) }}</strong> counting from then{% if standing.credit_carried %}
+    (including KES {{ "{:,.0f}".format(standing.credit_carried) }} you had paid in advance){% endif %}.
+    {% else %}
+    You've contributed <strong class="figure">KES {{ "{:,.0f}".format(standing.actual_cumulative) }}</strong> in total.
+    {% endif %}
+  </p>
   {% if standing.is_current %}
   <p style="color: var(--forest-dark); font-weight:600; margin-top:0.6rem;">
     &#9989; You're caught up - thank you for your timely contributions!
@@ -206,6 +219,31 @@
   <p class="muted">No penalties on record.</p>
   {% endif %}
 </div>
+
+{% if loan_applications %}
+<div class="card">
+  <h2>Loan applications</h2>
+  <table>
+    <tr><th>Date</th><th class="figure-head">Requested</th><th>Status</th><th>Detail</th></tr>
+    {% for a in loan_applications %}
+    <tr>
+      <td>{{ a.applied_at.strftime('%d %b %Y') }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(a.requested_amount) }}</td>
+      <td>
+        {% if a.status == 'pending' %}<span style="color: #8a611d; font-weight:600;">pending review</span>
+        {% elif a.status == 'approved' %}<span style="color: var(--forest-dark); font-weight:600;">approved</span>
+        {% else %}<span style="color: var(--red); font-weight:600;">rejected</span>{% endif %}
+      </td>
+      <td>
+        {% if a.status == 'rejected' and a.rejection_reason %}{{ a.rejection_reason }}
+        {% elif a.status == 'approved' and a.resulting_loan_id %}<a class="row-link" href="/loans/{{ a.resulting_loan_id }}/statement">View loan &rarr;</a>
+        {% else %}-{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
 
 <div class="card">
   <h2>Dividend history</h2>

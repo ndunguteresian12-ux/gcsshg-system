@@ -86,29 +86,65 @@ def get_settings(cur):
     return cur.fetchone()
 
 
-def compute_contribution_standing(cur, member_id, join_date, min_contribution, as_of):
+def compute_contribution_standing(cur, member_id, join_date, min_contribution, as_of, penalty_start=None):
     """
     Single source of truth for the cumulative contribution check - used by
     BOTH the penalty engine and the member statement page, so they can
     never disagree with each other.
-    Returns months elapsed since joining (not counting the current
-    in-progress month), what should have been contributed by now, what
-    actually has been, and the shortfall (0 if caught up or ahead).
+    Returns months elapsed (not counting the current in-progress month),
+    what should have been contributed by now, what actually has been, and
+    the shortfall (0 if caught up or ahead).
+
+    penalty_start: an optional "fresh start" date. When set (and it falls
+    after the member joined), counting begins from that month instead of
+    the join month - so shortfall that existed before the fresh start is
+    not penalised. Money paid ahead BEFORE the fresh start is kept as
+    credit, so nobody loses a genuine advance payment.
     """
     join_month = join_date.replace(day=1)
     current_month_start = as_of.replace(day=1)
+
+    start_month = join_month
+    baseline_month = None
+    credit_carried = Decimal("0")
+    if penalty_start is not None:
+        b = penalty_start.replace(day=1)
+        if b > join_month:
+            baseline_month = b
+            start_month = b
+            months_before = 0
+            cursor_month = join_month
+            while cursor_month < b:
+                months_before += 1
+                cursor_month = add_months(cursor_month, 1)
+            cur.execute(
+                "SELECT COALESCE(SUM(amount),0) as total FROM contributions "
+                "WHERE member_id = %s AND contribution_month < %s",
+                (member_id, b),
+            )
+            paid_before = cur.fetchone()["total"]
+            credit_carried = max(paid_before - min_contribution * months_before, Decimal("0"))
+
     months_elapsed = 0
-    cursor_month = join_month
+    cursor_month = start_month
     while cursor_month < current_month_start:
         months_elapsed += 1
         cursor_month = add_months(cursor_month, 1)
 
     expected_cumulative = min_contribution * months_elapsed
-    cur.execute(
-        "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
-        (member_id,),
-    )
-    actual_cumulative = cur.fetchone()["total"]
+    if baseline_month is not None:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount),0) as total FROM contributions "
+            "WHERE member_id = %s AND contribution_month >= %s",
+            (member_id, baseline_month),
+        )
+        actual_cumulative = cur.fetchone()["total"] + credit_carried
+    else:
+        cur.execute(
+            "SELECT COALESCE(SUM(amount),0) as total FROM contributions WHERE member_id = %s",
+            (member_id,),
+        )
+        actual_cumulative = cur.fetchone()["total"]
     shortfall = max(expected_cumulative - actual_cumulative, Decimal("0"))
     is_current = actual_cumulative >= expected_cumulative
 
@@ -118,6 +154,8 @@ def compute_contribution_standing(cur, member_id, join_date, min_contribution, a
         "actual_cumulative": actual_cumulative,
         "shortfall": shortfall,
         "is_current": is_current,
+        "baseline_month": baseline_month,
+        "credit_carried": credit_carried,
     }
 
 
@@ -296,7 +334,7 @@ def run_reminder_checks(cur, today):
         days_until_due = (loan["due_date"] - today).days
         if days_until_due not in (LOAN_REMINDER_ADVANCE_DAYS, 0):
             continue
-        detail = build_loan_detail(cur, loan, today, settings["penalty_amount"], repaid_map)
+        detail = build_loan_detail(cur, loan, today, settings, repaid_map)
         if detail["current_balance"] <= 0:
             continue
         reminder_type = "loan_due_today" if days_until_due == 0 else "loan_due_advance"
@@ -395,13 +433,24 @@ def get_repaid_map(cur):
     return {row["loan_id"]: row["repaid"] for row in cur.fetchall()}
 
 
-def build_loan_detail(cur, loan, as_of, penalty_amount, repaid_map=None):
+def build_loan_detail(cur, loan, as_of, penalty_settings, repaid_map=None):
     """
     Computes repaid amount, current balance, overdue status, and penalty
     owed for a single loan - used consistently everywhere a loan is displayed.
     Pass repaid_map (from get_repaid_map) when building details for many
     loans at once, to avoid a separate query per loan.
+
+    penalty_settings: the group settings row (preferred - it carries the
+    penalty amount AND the optional fresh-start date), or just a bare
+    penalty amount, in which case no fresh-start date applies.
     """
+    if isinstance(penalty_settings, dict):
+        penalty_amount = penalty_settings["penalty_amount"]
+        penalty_start = penalty_settings.get("penalty_start_date")
+    else:
+        penalty_amount = penalty_settings
+        penalty_start = None
+
     terms = terms_from_loan_row(loan)
     override = loan.get("interest_override_periods")
     if repaid_map is not None:
@@ -414,9 +463,13 @@ def build_loan_detail(cur, loan, as_of, penalty_amount, repaid_map=None):
         repaid = cur.fetchone()["repaid"]
     balance = loan_balance_due(loan["principal"], repaid, loan["issue_date"], as_of, terms, override)
     due = loan["due_date"]
+    # The loan really is overdue from its true due date (that stays visible),
+    # but months that attract a PENALTY only count from the fresh-start date.
+    penalty_due_date = max(due, penalty_start) if (due and penalty_start) else due
     overdue = is_loan_overdue(due, balance, as_of) if due else False
-    overdue_months = loan_overdue_months(due, as_of) if overdue else 0
-    penalty = loan_penalty_due(due, balance, as_of, penalty_amount) if due else Decimal("0")
+    penalised = is_loan_overdue(penalty_due_date, balance, as_of) if penalty_due_date else False
+    overdue_months = loan_overdue_months(penalty_due_date, as_of) if penalised else 0
+    penalty = loan_penalty_due(penalty_due_date, balance, as_of, penalty_amount) if penalty_due_date else Decimal("0")
     return {
         **loan, "amount_repaid": repaid, "current_balance": balance,
         "is_overdue": overdue, "overdue_months": overdue_months, "penalty_due": penalty,
@@ -845,7 +898,7 @@ def member_statement(member_id: int, session_data=Depends(require_session)):
             cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (member_id,))
             loans = cur.fetchall()
             settings = get_settings(cur)
-            loan_details = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            loan_details = [build_loan_detail(cur, loan, date.today(), settings) for loan in loans]
 
             cur.execute(
                 """SELECT d.dividend_amount, d.total_contribution, r.fiscal_year_label, r.computed_at
@@ -1687,7 +1740,7 @@ def build_member_statement_data(cur, member_id, today):
     cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (member_id,))
     loans = cur.fetchall()
     repaid_map = get_repaid_map(cur)
-    loan_details = [build_loan_detail(cur, l, today, settings["penalty_amount"], repaid_map) for l in loans]
+    loan_details = [build_loan_detail(cur, l, today, settings, repaid_map) for l in loans]
 
     cur.execute(
         "SELECT * FROM penalties WHERE member_id = %s ORDER BY waived ASC, created_at DESC", (member_id,)
@@ -1706,7 +1759,7 @@ def build_member_statement_data(cur, member_id, today):
     cur.execute("SELECT COALESCE(SUM(amount),0) as total FROM contributions")
     group_total_contributions = cur.fetchone()["total"]
 
-    standing = compute_contribution_standing(cur, member_id, member["join_date"], settings["min_monthly_contribution"], today)
+    standing = compute_contribution_standing(cur, member_id, member["join_date"], settings["min_monthly_contribution"], today, settings.get("penalty_start_date"))
 
     return {
         "member": member, "contributions": contributions, "total": total,
@@ -1728,6 +1781,8 @@ def render_statement_as_text(data):
         "CONTRIBUTION STANDING",
     ]
     s = data["standing"]
+    if s.get("baseline_month"):
+        lines.append(f"  (Penalties were reset - counting from {s['baseline_month'].strftime('%b %Y')}; earlier shortfall is not penalised)")
     lines.append(f"  {s['months_elapsed']} month(s) elapsed x minimum = KES {s['expected_cumulative']:,.2f} expected by now")
     lines.append(f"  Actual contributed: KES {s['actual_cumulative']:,.2f}")
     lines.append("  Caught up - thank you!" if s["is_current"] else f"  Behind by KES {s['shortfall']:,.2f}")
@@ -1910,7 +1965,7 @@ def loans_report(request: Request, session_data=Depends(get_session_optional)):
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
             loans = cur.fetchall()
-            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in loans]
+            loan_rows = [build_loan_detail(cur, loan, date.today(), settings, repaid_map) for loan in loans]
             total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
             total_paid = sum((l["amount_repaid"] for l in loan_rows), Decimal("0"))
             total_interest = sum(
@@ -1940,7 +1995,7 @@ def email_loans_report(recipient_email: str = Form(...), session_data=Depends(ge
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
             loans = cur.fetchall()
-            loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in loans]
+            loan_rows = [build_loan_detail(cur, loan, date.today(), settings, repaid_map) for loan in loans]
             total_principal = sum((l["principal"] for l in loan_rows), Decimal("0"))
             total_interest = sum(
                 (l["current_balance"] - l["principal"] + l["amount_repaid"] for l in loan_rows), Decimal("0")
@@ -1987,7 +2042,7 @@ def black_records_page(request: Request, session_data=Depends(get_session_option
                    ORDER BY l.defaulted_at DESC"""
             )
             defaults = cur.fetchall()
-            default_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in defaults]
+            default_rows = [build_loan_detail(cur, loan, date.today(), settings, repaid_map) for loan in defaults]
     finally:
         conn.close()
     return templates.TemplateResponse(request, "black_records.html", {
@@ -2082,7 +2137,7 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
             all_loans = cur.fetchall()
             repaid_map = get_repaid_map(cur)
             for loan in all_loans:
-                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map)
+                detail = build_loan_detail(cur, loan, date.today(), settings, repaid_map)
                 balance = detail["current_balance"]
                 if balance < Decimal("-0.01"):
                     issues.append({
@@ -2208,7 +2263,7 @@ def reallocate_overpayment_page(loan_id: int, request: Request, session_data=Dep
             loan = cur.fetchone()
             if not loan:
                 return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
-            detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+            detail = build_loan_detail(cur, loan, date.today(), settings)
             excess = abs(min(detail["current_balance"], Decimal("0")))
 
             cur.execute(
@@ -2218,7 +2273,7 @@ def reallocate_overpayment_page(loan_id: int, request: Request, session_data=Dep
             other_loans_raw = cur.fetchall()
             other_loans = []
             for ol in other_loans_raw:
-                od = build_loan_detail(cur, ol, date.today(), settings["penalty_amount"])
+                od = build_loan_detail(cur, ol, date.today(), settings)
                 if od["current_balance"] > 0:
                     other_loans.append(od)
     finally:
@@ -2460,7 +2515,7 @@ def dashboard(request: Request, session_data=Depends(get_session_optional)):
             total_loans_outstanding = Decimal("0")
             overdue_count = 0
             for loan in active_loans:
-                detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map)
+                detail = build_loan_detail(cur, loan, date.today(), settings, repaid_map)
                 total_loans_outstanding += detail["current_balance"]
                 if detail["is_overdue"]:
                     overdue_count += 1
@@ -2664,7 +2719,7 @@ def loans_page(request: Request, q: Optional[str] = None, session_data=Depends(g
                    ORDER BY (l.status = 'active') DESC, l.issue_date DESC"""
             )
             all_loans = cur.fetchall()
-            all_loan_rows = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"], repaid_map) for loan in all_loans]
+            all_loan_rows = [build_loan_detail(cur, loan, date.today(), settings, repaid_map) for loan in all_loans]
 
             # Stats always reflect the WHOLE group, regardless of search
             total_loans_issued = sum((Decimal(l["principal"]) for l in all_loans), Decimal("0"))
@@ -2969,7 +3024,7 @@ def repay_loan_page(loan_id: int, request: Request, q: Optional[str] = None,
             loan = cur.fetchone()
             if not loan:
                 return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
-            detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+            detail = build_loan_detail(cur, loan, date.today(), settings)
     finally:
         conn.close()
     return templates.TemplateResponse(request, "loan_repay.html", {
@@ -2992,7 +3047,7 @@ def loan_statement_page(loan_id: int, request: Request, session_data=Depends(get
             loan = cur.fetchone()
             if not loan:
                 return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Loan not found.</p>")
-            detail = build_loan_detail(cur, loan, date.today(), settings["penalty_amount"])
+            detail = build_loan_detail(cur, loan, date.today(), settings)
 
             cur.execute(
                 "SELECT * FROM loan_repayments WHERE loan_id = %s ORDER BY payment_date", (loan_id,)
@@ -3778,8 +3833,12 @@ def generate_penalties(cur, settings, today, include_loans=True, include_contrib
         )
         changed += cur.rowcount
 
-        if is_loan_overdue(loan["due_date"], balance, today):
-            months_overdue = loan_overdue_months(loan["due_date"], today)
+        # Months only attract a penalty from the fresh-start date onward (if set).
+        penalty_due_date = loan["due_date"]
+        if settings.get("penalty_start_date"):
+            penalty_due_date = max(penalty_due_date, settings["penalty_start_date"])
+        if is_loan_overdue(penalty_due_date, balance, today):
+            months_overdue = loan_overdue_months(penalty_due_date, today)
             amount = (penalty_amount * months_overdue).quantize(Decimal("0.01"))
             period_label = f"Overdue {months_overdue} month(s) as of {today.strftime('%d %b %Y')} ({months_overdue} x {penalty_amount:.0f})"
             cur.execute(
@@ -3809,7 +3868,7 @@ def generate_penalties(cur, settings, today, include_loans=True, include_contrib
         )
         changed += cur.rowcount
 
-        standing = compute_contribution_standing(cur, m["id"], m["join_date"], min_contribution, today)
+        standing = compute_contribution_standing(cur, m["id"], m["join_date"], min_contribution, today, settings.get("penalty_start_date"))
         if standing["is_current"]:
             continue  # caught up overall - no penalty, regardless of which months were light
 
@@ -3898,6 +3957,60 @@ def reset_contribution_penalties(session_data=Depends(get_session_optional)):
     return RedirectResponse(url="/penalties?" + urlencode({"error": msg}), status_code=303)
 
 
+@app.post("/admin/penalties-fresh-start")
+def penalties_fresh_start(session_data=Depends(get_session_optional)):
+    """
+    A true clean slate. Deletes EVERY penalty (including paid/waived) and
+    records today as the penalties start date, so shortfall and overdue
+    months from before today are never penalised - unlike a plain wipe,
+    which deletes and then instantly rebuilds the same penalties from
+    the same history. From here on, only NEW shortfall and NEW overdue
+    months count.
+    """
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            # Set the date FIRST: if the column doesn't exist yet (migration
+            # not run), this fails before anything is deleted.
+            try:
+                cur.execute("UPDATE group_settings SET penalty_start_date = %s", (date.today(),))
+            except Exception as e:
+                conn.rollback()
+                if "penalty_start_date" in str(e):
+                    return RedirectResponse(
+                        url="/penalties?" + urlencode({"error": "Nothing was deleted. Run migration_017_penalty_fresh_start.sql in Neon first, then try again."}),
+                        status_code=303,
+                    )
+                raise
+            cur.execute("DELETE FROM penalties")
+            removed = cur.rowcount
+            settings = get_settings(cur)
+            rebuilt = generate_penalties(cur, settings, date.today())
+            conn.commit()
+    finally:
+        conn.close()
+    msg = (f"Fresh start done: {removed} penalties deleted and penalties now count from {date.today().strftime('%d %b %Y')}. "
+           f"{rebuilt} penalties exist right now.")
+    return RedirectResponse(url="/penalties?" + urlencode({"error": msg}), status_code=303)
+
+
+@app.post("/admin/penalties-clear-start-date")
+def penalties_clear_start_date(session_data=Depends(get_session_optional)):
+    """Removes the start date, so penalties count from join / due dates again. Does not delete or rebuild anything."""
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/penalties?error=Only+the+chairperson+can+do+this", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE group_settings SET penalty_start_date = NULL")
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/penalties?error=Start+date+cleared.+Run+the+penalty+check+to+recalculate.", status_code=303)
+
+
 @app.post("/admin/wipe-and-recalculate-penalties")
 def wipe_and_recalculate_penalties(session_data=Depends(get_session_optional)):
     """
@@ -3942,11 +4055,13 @@ def penalties_page(request: Request, session_data=Depends(get_session_optional))
                 (Decimal(p["amount"]) for p in penalties if not p["waived"] and not p["paid"]), Decimal("0")
             )
             total_paid = sum((Decimal(p["amount"]) for p in penalties if p["paid"]), Decimal("0"))
+            penalty_start_date = get_settings(cur).get("penalty_start_date")
     finally:
         conn.close()
     return templates.TemplateResponse(request, "penalties.html", {
         "penalties": penalties, "total_outstanding": total_outstanding,
         "total_paid": total_paid, "role": session_data["role"],
+        "penalty_start_date": penalty_start_date,
     })
 
 
@@ -4301,7 +4416,7 @@ def statement_page(request: Request, member_id: Optional[int] = None,
             cur.execute("SELECT * FROM loans WHERE member_id = %s ORDER BY issue_date DESC", (mid,))
             loans = cur.fetchall()
             settings = get_settings(cur)
-            loan_details = [build_loan_detail(cur, loan, date.today(), settings["penalty_amount"]) for loan in loans]
+            loan_details = [build_loan_detail(cur, loan, date.today(), settings) for loan in loans]
 
             cur.execute(
                 """SELECT d.dividend_amount, d.total_contribution, r.fiscal_year_label, r.computed_at
@@ -4326,7 +4441,8 @@ def statement_page(request: Request, member_id: Optional[int] = None,
             group_total_contributions = cur.fetchone()["total"]
 
             standing = compute_contribution_standing(
-                cur, mid, member["join_date"], settings["min_monthly_contribution"], date.today()
+                cur, mid, member["join_date"], settings["min_monthly_contribution"], date.today(),
+                settings.get("penalty_start_date"),
             )
 
             today = date.today()
