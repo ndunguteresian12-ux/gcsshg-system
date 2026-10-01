@@ -19,6 +19,15 @@
   </p>
   {% endif %}
   <p class="muted">Computed {{ run.computed_at.strftime('%d %b %Y, %H:%M') }} &middot; paid to members KES {{ "{:,.2f}".format(run.total_interest_pool) }}</p>
+  <a href="/dividends/{{ run.id }}/payout-form" class="btn btn-secondary no-print" style="margin-top:0.5rem;">Print payout form (with signatures)</a>
+  <a href="/bank-balance?prefill_amount={{ run.total_interest_pool }}&prefill_type=withdrawal&prefill_note={{ ('Dividend payout - ' + run.fiscal_year_label) | urlencode }}"
+     class="btn btn-secondary no-print" style="margin-top:0.5rem;">
+    Record this as a bank withdrawal
+  </a>
+  <p class="muted no-print" style="margin-top:0.3rem;">
+    This run doesn't touch your bank balance automatically - once you've actually paid members out, log it
+    here so the balance stays accurate.
+  </p>
   {% if run.gross_pool %}
   <p class="muted">
     Gross pool KES {{ "{:,.0f}".format(run.gross_pool) }} &middot;

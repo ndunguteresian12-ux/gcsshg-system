@@ -1404,6 +1404,38 @@ def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year
     return RedirectResponse(url=f"/dividends/{run_id}", status_code=303)
 
 
+@app.get("/dividends/{run_id}/payout-form", response_class=HTMLResponse)
+def dividend_payout_form(run_id: int, request: Request, session_data=Depends(get_session_optional)):
+    """
+    A clean, printable payout sheet for ONE saved run: member, total
+    contribution, weighted units, dividend paid, and a signature line.
+    Deliberately does not mention the gross pool or any administration or
+    transaction cut - only what each member is actually owed.
+    """
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM dividend_runs WHERE id = %s", (run_id,))
+            run = cur.fetchone()
+            if not run:
+                return HTMLResponse("<p style='font-family:sans-serif;padding:2rem'>Run not found.</p>")
+            cur.execute(
+                """SELECT d.member_id, d.total_contribution, d.weighted_contribution, d.dividend_amount, m.full_name
+                   FROM dividends d JOIN members m ON m.id = d.member_id
+                   WHERE d.dividend_run_id = %s ORDER BY m.full_name""",
+                (run_id,),
+            )
+            rows = cur.fetchall()
+            total_paid = sum((r["dividend_amount"] for r in rows), Decimal("0"))
+    finally:
+        conn.close()
+    return templates.TemplateResponse(request, "dividend_payout_form.html", {
+        "run": run, "rows": rows, "total_paid": total_paid, "role": session_data["role"],
+    })
+
+
 @app.get("/dividends/year-sheet/{run_id}", response_class=HTMLResponse)
 def dividend_year_sheet(run_id: int, request: Request, session_data=Depends(get_session_optional)):
     if not session_data or session_data["role"] != "chairperson":
@@ -2168,6 +2200,54 @@ def audit_page(request: Request, session_data=Depends(get_session_optional)):
                         "category": "Loan missing a due date",
                         "detail": f"{loan['full_name']}: loan #{loan['id']} has no due date on record",
                         "loan_id": loan["id"],
+                    })
+
+            # 3b. Repayments dated on or before the day their loan was issued. On a
+            # monthly-interest loan no interest can have built up by then, so the
+            # whole payment went to principal - usually a wrong or blank-defaulted date.
+            cur.execute(
+                """SELECT r.id, r.loan_id, r.payment_date, r.amount, l.issue_date, m.full_name
+                   FROM loan_repayments r
+                   JOIN loans l ON l.id = r.loan_id JOIN members m ON m.id = l.member_id
+                   WHERE l.interest_tier = 'low' AND l.interest_override_periods IS NULL
+                     AND r.payment_date <= l.issue_date AND r.amount > 0
+                   ORDER BY r.payment_date"""
+            )
+            for r in cur.fetchall():
+                issues.append({
+                    "severity": "warning",
+                    "category": "Repayment dated on or before the loan was issued",
+                    "detail": f"{r['full_name']}: KES {r['amount']:,.0f} repayment on loan #{r['loan_id']} is dated "
+                              f"{r['payment_date']} (loan issued {r['issue_date']}). No interest had built up by then, "
+                              f"so all of it counted as principal - check the date is right.",
+                    "loan_id": r["loan_id"],
+                    "fix_url": f"/loans/{r['loan_id']}/statement#repayments", "fix_label": "Correct the date",
+                })
+
+            # 3c. Loans whose stored interest/principal split differs from a fresh
+            # recalculation (entered out of date order, or recorded under older rules).
+            cur.execute("SELECT * FROM loan_repayments")
+            reps_by_loan = {}
+            for r in cur.fetchall():
+                reps_by_loan.setdefault(r["loan_id"], []).append(r)
+            for loan in all_loans:
+                reps = reps_by_loan.get(loan["id"], [])
+                if not reps:
+                    continue
+                stored = {r["id"]: r for r in reps}
+                differing = sum(
+                    1 for rid, i, p in compute_repayment_split(loan, reps)
+                    if abs(stored[rid]["interest_component"] - i) > Decimal("0.01")
+                )
+                if differing:
+                    issues.append({
+                        "severity": "warning",
+                        "category": "Interest/principal split needs recalculating",
+                        "detail": f"{loan['full_name']}: loan #{loan['id']} has {differing} repayment(s) whose "
+                                  f"interest/principal split differs from a fresh recalculation. Balances are "
+                                  f"unaffected, but 'interest actually paid' may be off.",
+                        "loan_id": loan["id"],
+                        "fix_url": f"/loans/{loan['id']}/statement#repayments", "fix_label": "Recalculate",
                     })
 
             # 4. Multiple active members sharing the same phone number
@@ -3294,6 +3374,91 @@ def describe_repayment_split(interest, principal):
     return text
 
 
+def compute_repayment_split(loan, repayments):
+    """
+    The interest/principal split every repayment on a loan SHOULD have, worked
+    out in date order (payment date, then entry order): on each payment date,
+    interest owed to that date is settled first, then principal. Amounts and
+    dates are never changed here - only the split. Correction entries
+    (zero or negative amounts, from the overpayment reallocation tool) are
+    passed through untouched.
+    Returns a list of (repayment_id, interest, principal).
+    """
+    terms = terms_from_loan_row(loan)
+    override = loan.get("interest_override_periods")
+    interest_paid = Decimal("0")
+    result = []
+    for r in sorted(repayments, key=lambda r: (r["payment_date"], r["id"])):
+        if r["amount"] <= 0:
+            result.append((r["id"], r["interest_component"], r["principal_component"]))
+            continue
+        interest_due = loan_interest_due(loan["principal"], loan["issue_date"], r["payment_date"], terms, override)
+        outstanding = max(interest_due - interest_paid, Decimal("0"))
+        interest = min(r["amount"], outstanding)
+        interest_paid += interest
+        result.append((r["id"], interest, r["amount"] - interest))
+    return result
+
+
+def refresh_loan_status(cur, loan_id):
+    """
+    After a repayment is changed or removed, put the loan's status back in
+    line with its repayments: cleared if it was fully paid off by its last
+    payment, active again if it no longer is. Defaulted loans are left alone.
+    """
+    cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+    loan = cur.fetchone()
+    if not loan or loan["status"] == "defaulted":
+        return
+    cur.execute(
+        "SELECT COALESCE(SUM(amount),0) as t, MAX(payment_date) as d FROM loan_repayments WHERE loan_id = %s",
+        (loan_id,),
+    )
+    row = cur.fetchone()
+    terms = terms_from_loan_row(loan)
+    settled = (
+        row["d"] is not None
+        and loan_balance_due(loan["principal"], row["t"], loan["issue_date"], row["d"], terms,
+                             loan.get("interest_override_periods")) <= 0
+    )
+    if settled:
+        if loan["status"] != "cleared" or loan["cleared_date"] != row["d"]:
+            cur.execute("UPDATE loans SET status = 'cleared', cleared_date = %s WHERE id = %s", (row["d"], loan_id))
+    elif loan["status"] == "cleared":
+        cur.execute("UPDATE loans SET status = 'active', cleared_date = NULL WHERE id = %s", (loan_id,))
+
+
+def resplit_loan_repayments(cur, loan_id):
+    """Recalculate and store the interest/principal split for a loan's repayments, then refresh its status."""
+    cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+    loan = cur.fetchone()
+    cur.execute("SELECT * FROM loan_repayments WHERE loan_id = %s", (loan_id,))
+    repayments = {r["id"]: r for r in cur.fetchall()}
+    changed = 0
+    for rid, interest, principal in compute_repayment_split(loan, list(repayments.values())):
+        old = repayments[rid]
+        if old["interest_component"] != interest or old["principal_component"] != principal:
+            cur.execute(
+                "UPDATE loan_repayments SET interest_component = %s, principal_component = %s WHERE id = %s",
+                (interest, principal, rid),
+            )
+            changed += 1
+    refresh_loan_status(cur, loan_id)
+    return changed
+
+
+def loan_interest_recorded(cur, loan_id):
+    cur.execute("SELECT COALESCE(SUM(interest_component),0) as i FROM loan_repayments WHERE loan_id = %s", (loan_id,))
+    return cur.fetchone()["i"]
+
+
+def log_audit(cur, user_id, action, entity_type, entity_id, details):
+    cur.execute(
+        "INSERT INTO audit_log (user_id, action, entity_type, entity_id, details) VALUES (%s, %s, %s, %s, %s)",
+        (user_id, action, entity_type, entity_id, psycopg2.extras.Json(details)),
+    )
+
+
 def apply_loan_repayment(cur, loan, amount_dec, payment_date, recorded_by):
     """
     Records one repayment against a loan, splitting it between interest and
@@ -3538,6 +3703,96 @@ def repay_loan_form(loan_id: int = Form(...), amount: float = Form(...),
     if search_query:
         return RedirectResponse(url="/loans?" + urlencode({"success": message, "q": search_query}), status_code=303)
     return RedirectResponse(url=f"/loans/{loan_id}/statement?" + urlencode({"success": message}), status_code=303)
+
+
+def _statement_redirect(loan_id, ok=None, err=None):
+    params = {}
+    if ok: params["success"] = ok
+    if err: params["error"] = err
+    return RedirectResponse(url=f"/loans/{loan_id}/statement?" + urlencode(params) + "#repayments", status_code=303)
+
+
+@app.post("/loans/{loan_id}/repayments/{repayment_id}/edit-date")
+def edit_repayment_date(loan_id: int, repayment_id: int, payment_date_field: str = Form(...),
+                         session_data=Depends(get_session_optional)):
+    """Correct the date a repayment was made. The amount stays the same; the interest/principal split is recalculated."""
+    if not session_data or session_data["role"] != "chairperson":
+        return _statement_redirect(loan_id, err="Only the chairperson can change a recorded repayment.")
+    try:
+        new_date = date.fromisoformat(payment_date_field)
+    except ValueError:
+        return _statement_redirect(loan_id, err="That isn't a valid date.")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM loans WHERE id = %s", (loan_id,))
+            loan = cur.fetchone()
+            cur.execute("SELECT * FROM loan_repayments WHERE id = %s AND loan_id = %s", (repayment_id, loan_id))
+            rep = cur.fetchone()
+            if not loan or not rep:
+                return _statement_redirect(loan_id, err="Repayment not found.")
+            if new_date < loan["issue_date"]:
+                return _statement_redirect(loan_id, err=f"A repayment can't be dated before the loan was issued ({loan['issue_date']}).")
+            before = loan_interest_recorded(cur, loan_id)
+            cur.execute("UPDATE loan_repayments SET payment_date = %s WHERE id = %s", (new_date, repayment_id))
+            resplit_loan_repayments(cur, loan_id)
+            after = loan_interest_recorded(cur, loan_id)
+            log_audit(cur, session_data["user_id"], "EDIT_REPAYMENT_DATE", "loan_repayment", repayment_id, {
+                "loan_id": loan_id, "amount": str(rep["amount"]), "old_date": str(rep["payment_date"]),
+                "new_date": str(new_date), "interest_before": str(before), "interest_after": str(after)})
+            conn.commit()
+    finally:
+        conn.close()
+    return _statement_redirect(
+        loan_id, ok=(f"Repayment date changed from {rep['payment_date']} to {new_date}. Interest recorded on this loan "
+                     f"went from KES {before:,.0f} to KES {after:,.0f}. Run the penalty check if this loan had penalties."))
+
+
+@app.post("/loans/{loan_id}/repayments/{repayment_id}/delete")
+def delete_repayment(loan_id: int, repayment_id: int, session_data=Depends(get_session_optional)):
+    """Remove a wrongly recorded repayment. The loan's other repayments are re-split and its status refreshed."""
+    if not session_data or session_data["role"] != "chairperson":
+        return _statement_redirect(loan_id, err="Only the chairperson can delete a recorded repayment.")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM loan_repayments WHERE id = %s AND loan_id = %s", (repayment_id, loan_id))
+            rep = cur.fetchone()
+            if not rep:
+                return _statement_redirect(loan_id, err="Repayment not found.")
+            cur.execute("DELETE FROM loan_repayments WHERE id = %s", (repayment_id,))
+            resplit_loan_repayments(cur, loan_id)
+            log_audit(cur, session_data["user_id"], "DELETE_REPAYMENT", "loan_repayment", repayment_id, {
+                "loan_id": loan_id, "amount": str(rep["amount"]), "payment_date": str(rep["payment_date"]),
+                "interest_component": str(rep["interest_component"])})
+            conn.commit()
+    finally:
+        conn.close()
+    return _statement_redirect(
+        loan_id, ok=f"Deleted the KES {rep['amount']:,.0f} repayment dated {rep['payment_date']}. "
+                    f"Record it again with the correct date if it was real. Run the penalty check to refresh penalties.")
+
+
+@app.post("/loans/{loan_id}/resplit")
+def resplit_repayments_route(loan_id: int, session_data=Depends(get_session_optional)):
+    """Recalculate the interest/principal split of every repayment on a loan, keeping amounts and dates."""
+    if not session_data or session_data["role"] != "chairperson":
+        return _statement_redirect(loan_id, err="Only the chairperson can do this.")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            before = loan_interest_recorded(cur, loan_id)
+            changed = resplit_loan_repayments(cur, loan_id)
+            after = loan_interest_recorded(cur, loan_id)
+            if changed:
+                log_audit(cur, session_data["user_id"], "RESPLIT_REPAYMENTS", "loan", loan_id, {
+                    "rows_changed": changed, "interest_before": str(before), "interest_after": str(after)})
+            conn.commit()
+    finally:
+        conn.close()
+    if not changed:
+        return _statement_redirect(loan_id, ok="Checked - every repayment's interest/principal split on this loan was already correct.")
+    return _statement_redirect(loan_id, ok=f"Recalculated {changed} repayment(s). Interest recorded on this loan went from KES {before:,.0f} to KES {after:,.0f}.")
 
 
 @app.post("/loans/bulk-repay")

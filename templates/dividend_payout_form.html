@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Dividend Payout - {{ run.fiscal_year_label }}{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/dividends/{{ run.id }}">&larr; Run details</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card">
+  <a href="/dividends/{{ run.id }}" class="row-link no-print">&larr; Back to run details</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">Dividend Payout - {{ run.fiscal_year_label }}</h1>
+  <div class="muted">Paid out {{ run.computed_at.strftime('%d %b %Y') }}</div>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="card">
+  <table>
+    <tr>
+      <th style="width:2.2rem;">#</th>
+      <th>Member</th>
+      <th class="figure-head">Total contribution</th>
+      <th class="figure-head">Weighted units</th>
+      <th class="figure-head">Dividend paid</th>
+      <th style="min-width:160px;">Signature</th>
+      <th style="min-width:100px;">Date</th>
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ r.full_name }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.total_contribution) }}</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.0f}".format(r.weighted_contribution) }}</td>
+      <td class="figure" style="text-align:right; font-weight:600;">{{ "{:,.2f}".format(r.dividend_amount) }}</td>
+      <td></td>
+      <td></td>
+    </tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--forest); font-weight:700;">
+      <td colspan="4" style="text-align:right;">Total dividend paid</td>
+      <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(total_paid) }}</td>
+      <td></td>
+      <td></td>
+    </tr>
+  </table>
+</div>
+
+{% endblock %}
