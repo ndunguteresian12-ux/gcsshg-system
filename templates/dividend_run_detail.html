@@ -20,6 +20,12 @@
   {% endif %}
   <p class="muted">Computed {{ run.computed_at.strftime('%d %b %Y, %H:%M') }} &middot; paid to members KES {{ "{:,.2f}".format(run.total_interest_pool) }}</p>
   <a href="/dividends/{{ run.id }}/payout-form" class="btn btn-secondary no-print" style="margin-top:0.5rem;">Print payout form (with signatures)</a>
+  {% if role == 'chairperson' %}
+  <form method="post" action="/dividends/{{ run.id }}/delete" class="no-print" style="display:inline;"
+        onsubmit="return confirm('Delete this dividend run? This removes the system record so you can rerun it - it does NOT undo any cash already handed to members. Continue?');">
+    <button type="submit" class="btn-secondary" style="margin-top:0.5rem; color: var(--red);">Delete this run</button>
+  </form>
+  {% endif %}
   <a href="/bank-balance?prefill_amount={{ run.total_interest_pool }}&prefill_type=withdrawal&prefill_note={{ ('Dividend payout - ' + run.fiscal_year_label) | urlencode }}"
      class="btn btn-secondary no-print" style="margin-top:0.5rem;">
     Record this as a bank withdrawal

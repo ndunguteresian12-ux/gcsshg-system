@@ -1404,6 +1404,34 @@ def dividends_confirm(fiscal_year_label: str = Form(...), fiscal_year_start_year
     return RedirectResponse(url=f"/dividends/{run_id}", status_code=303)
 
 
+@app.post("/dividends/{run_id}/delete")
+def delete_dividend_run(run_id: int, session_data=Depends(get_session_optional)):
+    """
+    Deletes a saved dividend run and every member's dividend row under it
+    (the database cascades this automatically). This only removes the
+    SYSTEM RECORD of the run - it does not undo any cash you have already
+    physically handed to members. If money has already gone out based on
+    this run, deleting it here just means the app stops counting it; you
+    still need to account for that cash yourself.
+    """
+    if not session_data or session_data["role"] != "chairperson":
+        return RedirectResponse(url="/dividends?error=Only+the+chairperson+can+delete+a+dividend+run", status_code=303)
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT fiscal_year_label, total_interest_pool FROM dividend_runs WHERE id = %s", (run_id,))
+            run = cur.fetchone()
+            if not run:
+                return RedirectResponse(url="/dividends?error=Run+not+found", status_code=303)
+            cur.execute("DELETE FROM dividend_runs WHERE id = %s", (run_id,))
+            log_audit(cur, session_data["user_id"], "DELETE_DIVIDEND_RUN", "dividend_run", run_id, {
+                "fiscal_year_label": run["fiscal_year_label"], "total_interest_pool": str(run["total_interest_pool"])})
+            conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url=f"/dividends?" + urlencode({"error": f"Deleted the '{run['fiscal_year_label']}' run. Rerun it when ready."}), status_code=303)
+
+
 @app.get("/dividends/{run_id}/payout-form", response_class=HTMLResponse)
 def dividend_payout_form(run_id: int, request: Request, session_data=Depends(get_session_optional)):
     """
