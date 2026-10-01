@@ -17,6 +17,17 @@
   <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
 </div>
 
+<div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
+  <div class="stat-card solid-gold">
+    <div class="stat-label">Total interest declared</div>
+    <div class="stat-value figure">{{ "{:,.2f}".format(gross_declared) }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Paid out to members</div>
+    <div class="stat-value figure">{{ "{:,.2f}".format(total_paid) }}</div>
+  </div>
+</div>
+
 <div class="card">
   <table>
     <tr>
@@ -40,7 +51,7 @@
     </tr>
     {% endfor %}
     <tr style="border-top:2px solid var(--forest); font-weight:700;">
-      <td colspan="4" style="text-align:right;">Total dividend paid</td>
+      <td colspan="4" style="text-align:right;">Total paid to members</td>
       <td class="figure" style="text-align:right;">{{ "{:,.2f}".format(total_paid) }}</td>
       <td></td>
       <td></td>

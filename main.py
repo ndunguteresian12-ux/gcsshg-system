@@ -1409,8 +1409,10 @@ def dividend_payout_form(run_id: int, request: Request, session_data=Depends(get
     """
     A clean, printable payout sheet for ONE saved run: member, total
     contribution, weighted units, dividend paid, and a signature line.
-    Deliberately does not mention the gross pool or any administration or
-    transaction cut - only what each member is actually owed.
+    Shows the gross interest declared (which the admin fee and transaction
+    costs come out of) as the headline total, and the amount actually paid
+    to members as a second figure - but never itemises the admin fee or
+    transaction cost as their own line.
     """
     if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
         return RedirectResponse(url="/login")
@@ -1429,10 +1431,14 @@ def dividend_payout_form(run_id: int, request: Request, session_data=Depends(get
             )
             rows = cur.fetchall()
             total_paid = sum((r["dividend_amount"] for r in rows), Decimal("0"))
+            # gross_pool exists on runs saved with the admin/transaction split;
+            # older runs saved before that feature just paid out the full amount.
+            gross_declared = run["gross_pool"] if run["gross_pool"] else run["total_interest_pool"]
     finally:
         conn.close()
     return templates.TemplateResponse(request, "dividend_payout_form.html", {
-        "run": run, "rows": rows, "total_paid": total_paid, "role": session_data["role"],
+        "run": run, "rows": rows, "total_paid": total_paid, "gross_declared": gross_declared,
+        "role": session_data["role"],
     })
 
 
