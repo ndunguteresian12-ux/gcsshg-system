@@ -17,14 +17,10 @@
   <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
 </div>
 
-<div class="stat-grid" style="grid-template-columns: 1fr 1fr;">
+<div class="stat-grid" style="grid-template-columns: 1fr;">
   <div class="stat-card solid-gold">
     <div class="stat-label">Total interest declared</div>
     <div class="stat-value figure">{{ "{:,.2f}".format(gross_declared) }}</div>
-  </div>
-  <div class="stat-card">
-    <div class="stat-label">Paid out to members</div>
-    <div class="stat-value figure">{{ "{:,.2f}".format(total_paid) }}</div>
   </div>
 </div>
 
