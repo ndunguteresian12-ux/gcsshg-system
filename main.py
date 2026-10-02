@@ -1724,6 +1724,117 @@ def reports_page(request: Request, session_data=Depends(get_session_optional)):
     return templates.TemplateResponse(request, "reports.html", {"role": session_data["role"], "members": members})
 
 
+@app.get("/reports/comprehensive", response_class=HTMLResponse)
+def comprehensive_report(request: Request, session_data=Depends(get_session_optional)):
+    """
+    One printable report pulling together every summary figure already
+    tracked elsewhere in the app - deliberately reuses the same functions
+    the dashboard and audit page use, so this report can never show a
+    different number for the same thing.
+    """
+    if not session_data or session_data["role"] not in ("chairperson", "treasurer", "secretary"):
+        return RedirectResponse(url="/login")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            settings = get_settings(cur)
+            today = date.today()
+
+            cur.execute("SELECT COUNT(*) as n FROM members WHERE status = 'active'")
+            active_members = cur.fetchone()["n"]
+            cur.execute("SELECT COUNT(*) as n FROM members WHERE status = 'archived'")
+            archived_members = cur.fetchone()["n"]
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as t FROM contributions")
+            total_contributions = cur.fetchone()["t"]
+
+            cur.execute("SELECT * FROM loans")
+            all_loans = cur.fetchall()
+            repaid_map = get_repaid_map(cur)
+            loan_rows = [build_loan_detail(cur, l, today, settings, repaid_map) for l in all_loans]
+            total_loans_issued = sum((l["principal"] for l in loan_rows), Decimal("0"))
+            total_loans_paid = sum((l["amount_repaid"] for l in loan_rows), Decimal("0"))
+            total_loans_outstanding = sum((l["current_balance"] for l in loan_rows if l["status"] == "active"), Decimal("0"))
+            active_loan_count = sum(1 for l in loan_rows if l["status"] == "active")
+            overdue_loan_count = sum(1 for l in loan_rows if l["is_overdue"])
+            defaulted_loan_count = sum(1 for l in loan_rows if l["status"] == "defaulted")
+
+            cur.execute("SELECT COALESCE(SUM(interest_component),0) as t FROM loan_repayments")
+            interest_actually_paid = cur.fetchone()["t"]
+
+            expected_interest_gross = Decimal("0")
+            for loan in all_loans:
+                terms = terms_from_loan_row(loan)
+                override = loan.get("interest_override_periods")
+                as_of = loan["cleared_date"] if (loan["status"] == "cleared" and loan["cleared_date"]) else today
+                expected_interest_gross += loan_interest_due(loan["principal"], loan["issue_date"], as_of, terms, override)
+
+            cur.execute("SELECT COALESCE(SUM(amount),0) as t FROM penalties WHERE paid = FALSE AND waived = FALSE")
+            penalties_outstanding = cur.fetchone()["t"]
+            cur.execute("SELECT COALESCE(SUM(amount),0) as t FROM penalties WHERE paid = TRUE")
+            penalties_paid = cur.fetchone()["t"]
+            cur.execute("SELECT COALESCE(SUM(amount),0) as t FROM penalties WHERE waived = TRUE")
+            penalties_waived = cur.fetchone()["t"]
+
+            cur.execute("SELECT COALESCE(SUM(dividend_amount),0) as t FROM dividends")
+            total_dividends_paid = cur.fetchone()["t"]
+
+            contribution_growth = compute_contribution_growth(cur, today)
+            interest_growth = compute_interest_growth(all_loans, today)
+            timely_payment_pct = compute_timely_payment_pct(all_loans, today)
+            reconciliation = compute_funds_reconciliation(cur)
+            payable_dividends = get_payable_dividends(cur)
+
+            # Monthly contribution compliance: of members who had already joined
+            # by the most recently COMPLETED month, what fraction contributed at
+            # least the minimum for THAT one month specifically (not their
+            # cumulative standing - just that single month, in isolation).
+            last_complete_month = add_months(today.replace(day=1), -1)
+            cur.execute(
+                "SELECT id FROM members WHERE status = 'active' AND join_date <= %s",
+                (last_complete_month,),
+            )
+            eligible_ids = [r["id"] for r in cur.fetchall()]
+            if eligible_ids:
+                cur.execute(
+                    "SELECT member_id, SUM(amount) as t FROM contributions "
+                    "WHERE contribution_month = %s AND member_id = ANY(%s) GROUP BY member_id",
+                    (last_complete_month, eligible_ids),
+                )
+                paid_enough = sum(
+                    1 for r in cur.fetchall() if r["t"] >= settings["min_monthly_contribution"]
+                )
+                monthly_compliance_pct = (Decimal(paid_enough) / Decimal(len(eligible_ids)) * 100).quantize(Decimal("0.1"))
+            else:
+                monthly_compliance_pct = None
+
+            cur.execute(
+                """SELECT m.full_name, COALESCE(SUM(c.amount),0) as total
+                   FROM members m LEFT JOIN contributions c ON c.member_id = m.id
+                   WHERE m.status = 'active' GROUP BY m.id, m.full_name ORDER BY total DESC"""
+            )
+            member_totals = cur.fetchall()
+    finally:
+        conn.close()
+
+    return templates.TemplateResponse(request, "report_comprehensive.html", {
+        "role": session_data["role"], "generated_at": datetime.now(),
+        "active_members": active_members, "archived_members": archived_members,
+        "total_contributions": total_contributions,
+        "total_loans_issued": total_loans_issued, "total_loans_paid": total_loans_paid,
+        "total_loans_outstanding": total_loans_outstanding, "active_loan_count": active_loan_count,
+        "overdue_loan_count": overdue_loan_count, "defaulted_loan_count": defaulted_loan_count,
+        "interest_actually_paid": interest_actually_paid, "expected_interest_gross": expected_interest_gross,
+        "penalties_outstanding": penalties_outstanding, "penalties_paid": penalties_paid,
+        "penalties_waived": penalties_waived, "total_dividends_paid": total_dividends_paid,
+        "contribution_growth": contribution_growth, "interest_growth": interest_growth,
+        "timely_payment_pct": timely_payment_pct, "monthly_compliance_pct": monthly_compliance_pct,
+        "last_complete_month": last_complete_month, "reconciliation": reconciliation,
+        "payable_dividends": payable_dividends, "member_totals": member_totals,
+        "min_monthly_contribution": settings["min_monthly_contribution"],
+    })
+
+
 def build_member_ledger(cur, member_id):
     """Shared by the ledger page and the email-this-ledger route, so both always agree."""
     cur.execute("SELECT * FROM members WHERE id = %s", (member_id,))

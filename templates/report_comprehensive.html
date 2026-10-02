@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Comprehensive Report - GCSSHG{% endblock %}
+{% block header_right %}
+<nav class="no-print">
+  <a href="/reports">&larr; Reports</a>
+  <a href="/logout">Log out</a>
+</nav>
+{% endblock %}
+{% block content %}
+
+{% include "_letterhead.html" %}
+
+<div class="card">
+  <a href="/reports" class="row-link no-print">&larr; Back to Reports</a>
+  <h1 style="font-size:1.3rem; margin:0.6rem 0 0;">Comprehensive Group Report</h1>
+  <div class="muted">Generated {{ generated_at.strftime('%d %b %Y, %H:%M') }}</div>
+  <button onclick="window.print()" class="btn btn-secondary no-print" style="margin-top:0.8rem;">Print / Save as PDF</button>
+</div>
+
+<div class="card">
+  <h2>Membership</h2>
+  <table>
+    <tr><td style="width:60%;">Active members</td><td class="figure">{{ active_members }}</td></tr>
+    <tr><td>Archived / exited members</td><td class="figure">{{ archived_members }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Contributions</h2>
+  <table>
+    <tr><td style="width:60%;">Total contributed (all-time, all members)</td><td class="figure">KES {{ "{:,.2f}".format(total_contributions) }}</td></tr>
+    <tr><td>Monthly growth (last complete month vs the one before)</td>
+        <td class="figure" style="color: {{ 'var(--red)' if contribution_growth.monthly_pct < 0 else 'var(--forest-dark)' }};">
+          {{ '+' if contribution_growth.monthly_pct >= 0 else '' }}{{ contribution_growth.monthly_pct }}%</td></tr>
+    <tr><td>Annual growth (this year so far vs the same months last year)</td>
+        <td class="figure" style="color: {{ 'var(--red)' if contribution_growth.annual_pct < 0 else 'var(--forest-dark)' }};">
+          {{ '+' if contribution_growth.annual_pct >= 0 else '' }}{{ contribution_growth.annual_pct }}%</td></tr>
+    <tr><td>Members who met the KES {{ "{:,.0f}".format(min_monthly_contribution) }} minimum for {{ last_complete_month.strftime('%B %Y') }}</td>
+        <td class="figure">{{ monthly_compliance_pct if monthly_compliance_pct is not none else "N/A" }}{{ '%' if monthly_compliance_pct is not none else '' }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Loans</h2>
+  <table>
+    <tr><td style="width:60%;">Total principal issued (all-time)</td><td class="figure">KES {{ "{:,.2f}".format(total_loans_issued) }}</td></tr>
+    <tr><td>Total repaid (all-time)</td><td class="figure">KES {{ "{:,.2f}".format(total_loans_paid) }}</td></tr>
+    <tr><td>Currently outstanding (active loans)</td><td class="figure">KES {{ "{:,.2f}".format(total_loans_outstanding) }}</td></tr>
+    <tr><td>Active loans / of which overdue / defaulted</td><td class="figure">{{ active_loan_count }} / {{ overdue_loan_count }} / {{ defaulted_loan_count }}</td></tr>
+    <tr><td>Timely payment rate (paid on time, or active and not yet overdue)</td>
+        <td class="figure">{{ timely_payment_pct if timely_payment_pct is not none else "N/A" }}{{ '%' if timely_payment_pct is not none else '' }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Interest</h2>
+  <table>
+    <tr><td style="width:60%;">Expected (accrued across every loan, as of today or when cleared)</td><td class="figure">KES {{ "{:,.2f}".format(expected_interest_gross) }}</td></tr>
+    <tr><td>Actually collected in cash (from repayments)</td><td class="figure">KES {{ "{:,.2f}".format(interest_actually_paid) }}</td></tr>
+    <tr><td>Monthly change in expected interest</td>
+        <td class="figure" style="color: {{ 'var(--red)' if interest_growth.monthly_pct < 0 else 'var(--forest-dark)' }};">
+          {{ '+' if interest_growth.monthly_pct >= 0 else '' }}{{ interest_growth.monthly_pct }}%</td></tr>
+    <tr><td>Annual change in expected interest</td>
+        <td class="figure" style="color: {{ 'var(--red)' if interest_growth.annual_pct < 0 else 'var(--forest-dark)' }};">
+          {{ '+' if interest_growth.annual_pct >= 0 else '' }}{{ interest_growth.annual_pct }}%</td></tr>
+    <tr><td>Payable dividends (collected minus already paid out)</td><td class="figure">KES {{ "{:,.2f}".format(payable_dividends) }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Penalties</h2>
+  <table>
+    <tr><td style="width:60%;">Currently outstanding (unpaid, unwaived)</td><td class="figure" style="color: var(--red);">KES {{ "{:,.2f}".format(penalties_outstanding) }}</td></tr>
+    <tr><td>Paid</td><td class="figure">KES {{ "{:,.2f}".format(penalties_paid) }}</td></tr>
+    <tr><td>Waived</td><td class="figure">KES {{ "{:,.2f}".format(penalties_waived) }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Dividends</h2>
+  <table>
+    <tr><td style="width:60%;">Total paid out to members (all-time)</td><td class="figure">KES {{ "{:,.2f}".format(total_dividends_paid) }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Funds reconciliation</h2>
+  <table>
+    <tr><td style="width:60%;">Bank balance</td><td class="figure">KES {{ "{:,.2f}".format(reconciliation.bank_balance) }}</td></tr>
+    <tr><td>Unpaid loan principal</td><td class="figure">KES {{ "{:,.2f}".format(reconciliation.unpaid_principal) }}</td></tr>
+    <tr><td>Bank balance + unpaid loan principal</td><td class="figure">KES {{ "{:,.2f}".format(reconciliation.money_accounted_for) }}</td></tr>
+    <tr><td>vs. contributions ({{ "{:,.0f}".format(reconciliation.total_contributions) }}) + interest collected ({{ "{:,.0f}".format(reconciliation.interest_collected) }})
+        + penalties collected ({{ "{:,.0f}".format(reconciliation.penalties_collected) }}) - dividends paid ({{ "{:,.0f}".format(reconciliation.dividends_paid) }})</td><td></td></tr>
+    <tr><td>{{ "Surplus" if reconciliation.surplus >= 0 else "Deficit" }}</td>
+        <td class="figure" style="color: {{ 'var(--red)' if reconciliation.surplus < -1000 else 'var(--forest-dark)' }};">
+          {{ '+' if reconciliation.surplus >= 0 else '' }}KES {{ "{:,.2f}".format(reconciliation.surplus) }}</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Members' total contributions</h2>
+  <table>
+    <tr><th>Member</th><th class="figure-head">Total contributed</th></tr>
+    {% for m in member_totals %}
+    <tr><td>{{ m.full_name }}</td><td class="figure" style="text-align:right;">{{ "{:,.2f}".format(m.total) }}</td></tr>
+    {% endfor %}
+    <tr style="border-top:2px solid var(--forest); font-weight:700;">
+      <td>Total</td><td class="figure" style="text-align:right;">{{ "{:,.2f}".format(total_contributions) }}</td>
+    </tr>
+  </table>
+</div>
+
+{% endblock %}
